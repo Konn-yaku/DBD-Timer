@@ -57,6 +57,10 @@ DEFAULTS = {
     "detect": {
         "auto": True,          # 启动画面自动识别（需先校准 boxes）
         "engine": "auto",     # 识别引擎: auto(有图标模型用icon)/icon/face
+        # 图标引擎运行阈值：icon_hook_thr 判定“钩上”所需 masked 相关。
+        # 受伤/被救后的人脸与钩形在判别区常只有 ~0.55~0.60 相关，抬高到 0.65
+        # 可避免其被误判成“一直钩上”而漏掉下钩；献祭阈值沿用模型训练阈值。
+        "icon_hook_thr": 0.65,
         "require_foreground": True,  # 仅当 DBD 窗口在前台才识别(被遮挡时抓到的不是游戏画面，会误报)
         "fps": 15.0,           # 识别采样帧率
         "confirm_frames": 3,   # 连续多少帧一致才确认状态切换（抑制闪烁）

@@ -51,13 +51,21 @@ class PrototypeIconClassifier(IconClassifier):
     注意上钩(钩形)与献祭(骷髅)图标区不同，必须分别给每类一个 mask。
 
     由于 'other' 是开放集，用“最相似类的相关度 < threshold => other”实现。
+
+    阈值可分别指定（thr_hooked / thr_sacrificed）：上钩门槛调高能滤掉
+    “受伤/被救后的人脸”与钩形在判别区 ~0.55~0.6 的误相关（否则会一直误判成
+    钩上 -> 下钩永远漏报）。缺省时两者都用 threshold(兼容旧模型/训练扫描)。
     """
 
-    def __init__(self, protos, threshold=0.70, mask=None):
+    def __init__(self, protos, threshold=0.70, mask=None,
+                 thr_hooked=None, thr_sacrificed=None):
         # protos: {label: 1d float 均值}，label ∈ {'hooked','sacrificed'} (other 不建原型)
         # mask: dict{label: bool}（推荐，每类一个判别区）；也可传单一数组(兼容旧模型)。
         self.protos = protos
         self.threshold = float(threshold)
+        self.thr_hooked = float(thr_hooked) if thr_hooked is not None else self.threshold
+        self.thr_sacrificed = (float(thr_sacrificed) if thr_sacrificed is not None
+                               else self.threshold)
         if isinstance(mask, dict):
             self.masks = {k: np.asarray(m, dtype=bool).ravel()
                           for k, m in mask.items()}
@@ -85,21 +93,35 @@ class PrototypeIconClassifier(IconClassifier):
         return float(np.corrcoef(x, p)[0, 1])
 
     def predict(self, patch_bgr):
+        """返回 'hooked'/'sacrificed'/'other'（钩上/献祭用各自阈值）。"""
         x = _prep(patch_bgr).ravel()
         if x.std() < 1e-6:
             return "other"
-        best = None
-        best_corr = self.threshold
-        for label, p in self.protos.items():
-            if label not in self._POSITIVE:   # normal 等开放集样本不参与竞争
-                continue
-            if p.std() < 1e-6:
-                continue
-            v = self._sim(x, p, label)
-            if v > best_corr:
-                best_corr = v
-                best = label
-        return best if best is not None else "other"
+        # 阈值未分别设置时保持旧的“单一阈值最近正类”语义
+        if (abs(self.thr_hooked - self.threshold) < 1e-9
+                and abs(self.thr_sacrificed - self.threshold) < 1e-9):
+            best = None
+            best_corr = self.threshold
+            for label in self._POSITIVE:
+                p = self.protos.get(label)
+                if p is None or p.std() < 1e-6:
+                    continue
+                v = self._sim(x, p, label)
+                if v > best_corr:
+                    best_corr = v
+                    best = label
+            return best if best is not None else "other"
+        # 分开阈值：献祭(死亡)优先(死人不会下钩)；其余看钩上是否够高。
+        hc = self._sim(x, self.protos["hooked"], "hooked") if "hooked" in self.protos else 0.0
+        sc = self._sim(x, self.protos["sacrificed"], "sacrificed")\
+            if "sacrificed" in self.protos else 0.0
+        if sc >= self.thr_sacrificed and sc >= hc:
+            return "sacrificed"
+        if hc >= self.thr_hooked:
+            return "hooked"
+        if sc >= self.thr_sacrificed:
+            return "sacrificed"
+        return "other"
 
 
 def load_model(path=MODEL_FILE):
@@ -128,8 +150,20 @@ def load_model(path=MODEL_FILE):
 
 
 def make_classifier(cfg=None):
-    """构建当前可用的分类器：有模型用原型分类器，否则用占位。"""
+    """构建当前可用的分类器：有模型用原型分类器，否则用占位。
+
+    运行时按配置对“钩上/献祭”施加各自阈值（比训练单一阈值更能容忍人脸误相关）：
+      - icon_hook_thr: 判定“钩上”所需 masked 相关(默认 0.65)；
+        受伤/被救后的人脸对钩形判别区常只有 ~0.55~0.60，抬高后不会被误判成钩上。
+      - 献祭阈值保持模型训练阈值(self.threshold)，默认 0.55。
+    """
     model = load_model()
-    if model is not None:
-        return model
-    return DummyIconClassifier()
+    if model is None:
+        return DummyIconClassifier()
+    if cfg is not None:
+        d = cfg.get("detect", {})
+        if isinstance(model, PrototypeIconClassifier):
+            model.thr_hooked = float(d.get("icon_hook_thr", 0.65))
+            # 献祭沿用模型自带阈值(训练时按 normal-误判率扫出)，可单独覆盖：
+            model.thr_sacrificed = float(d.get("icon_sac_thr", model.threshold))
+    return model
