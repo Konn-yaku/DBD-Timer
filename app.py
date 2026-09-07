@@ -366,6 +366,10 @@ def main():
 
     app = QApplication(sys.argv)
     app.setApplicationName("DBD Timer")
+    # 托盘常驻应用：悬浮窗是 Qt.Tool(不计为主窗口)，若开启“最后窗口关闭即退出”，
+    # 关闭 parent=None 的设置对话框会被当成最后一个主窗口而把整个程序带退。
+    # 改为显式退出：托盘“退出”/退出热键/其它 app.quit() 仍正常生效。
+    app.setQuitOnLastWindowClosed(False)
 
     # 供自检/CI 使用：设置 DBDTIMER_AUTOQUIT_MS=<毫秒> 可让程序自动退出
     try:
