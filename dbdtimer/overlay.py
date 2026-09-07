@@ -4,7 +4,8 @@
 与 4 名幸存者一一对应：
 - 自动识别模式：4 行计时器分别锚定到 4 个头像框的“左侧”（由校正框 boxes +
   游戏窗口矩形实时换算，行距 = 头像间距，无需手动逐行对齐）。
-- 手动兜底模式（无校正框/未找到游戏窗口时）：退化为自由纵向排布，可整体拖动。
+- 手动快捷键 1~4：直接 start_slot(idx)，只启/重启第 idx 位。
+- 未校准/未找到游戏窗口时：退化为自由纵向排布 4 行，可整体拖动。
 
 鼠标穿透 / 锁（由托盘图标 + 热键控制）：
 - 锁定态(默认)：整窗 WA_TransparentForInput 鼠标穿透，完全不挡游戏点击；
@@ -394,16 +395,8 @@ class OverlayWindow(QWidget):
         self.show()
 
     # ---------- 计时入口 / 刷新 ----------
-    def manual_start(self):
-        """手动兜底：启动第一个空闲槽(不知道对应哪位逃生者)。返回启动槽号或 None。"""
-        idx = self._bank.manual_trigger()
-        if idx is not None and idx < len(self._labels):
-            self._labels[idx].set_value("0.0")
-            self.raise_()
-        return idx
-
     def start_slot(self, idx):
-        """自动识别：启动/重启指定幸存者槽 idx 的计时器(槽=计时器一一对应)。
+        """启动/重启指定幸存者槽 idx 的计时器（手动快捷键 1~4 与自动识别共用）。
         返回启动的槽号或 None。"""
         got = self._bank.start_slot(idx)
         if got is not None and idx < len(self._labels):

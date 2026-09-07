@@ -53,9 +53,13 @@ DEFAULTS = {
         "boxes": [],
     },
     "keys": {
-        # 手动兜底：自己看到/听到下钩时按一下，立即启动一个空闲计时槽。
-        # 统一存为列表（可含 Ctrl/Alt/Shift/Win 修饰），例如 ['XBUTTON2'] 或 ['Ctrl','Alt','M']。
-        "manual_start": ["XBUTTON2"],
+        # 手动计时：4 个键分别精确控制 1~4 号计时器（对应 4 名逃生者）。
+        # 自动识别漏检时，看到“几号被下钩”就按对应号码键，只启/重启那位的计时。
+        # 统一存为列表（可含 Ctrl/Alt/Shift/Win 修饰），如 ['F1'] 或 ['Ctrl','Alt','M']。
+        "manual_1": ["F1"],
+        "manual_2": ["F2"],
+        "manual_3": ["F3"],
+        "manual_4": ["F4"],
         # 悬浮窗锁定/解锁切换（锁定后鼠标穿透；解锁后可拖动）
         "toggle_lock": ["Ctrl", "Alt", "L"],
         # 退出程序
@@ -103,6 +107,7 @@ def _deep_update(base, patch):
 def load():
     """载入配置：默认值 + config.json 覆盖。"""
     data = copy.deepcopy(DEFAULTS)
+    user = {}
     if os.path.exists(CONFIG_PATH):
         try:
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
@@ -110,8 +115,17 @@ def load():
             _deep_update(data, user)
         except Exception as exc:  # 配置损坏时静默回退默认
             print(f"[config] 读取 config.json 失败，使用默认值：{exc}")
-    # 把三个快捷键统一规范化成列表（兼容旧版字符串/缺失 quit 的历史配置）
-    for _k in ("manual_start", "toggle_lock", "quit"):
+    # 迁移旧版 manual_start(单个“任意空闲槽”键) -> manual_1(只控 1 号)。
+    # 依据“原始用户配置”判断：用户若写了旧 manual_start 而未写新 manual_1，
+    # 则把旧键作为 1 号手动键；否则保留默认/用户新值。
+    user_keys = user.get("keys", {}) if isinstance(user, dict) else {}
+    if ("manual_start" in user_keys and "manual_1" not in user_keys):
+        data["keys"]["manual_1"] = data["keys"].get("manual_start") \
+            or DEFAULTS["keys"]["manual_1"]
+    data["keys"].pop("manual_start", None)
+    # 把所有快捷键统一规范化成列表（兼容旧版字符串/缺失的历史配置）
+    for _k in ("manual_1", "manual_2", "manual_3", "manual_4",
+               "toggle_lock", "quit"):
         _v = data["keys"].get(_k)
         if isinstance(_v, (list, tuple)):
             data["keys"][_k] = [str(x) for x in _v]

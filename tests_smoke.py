@@ -51,13 +51,19 @@ def test_timers():
     r = b.sample(t0 + 2 + 61)   # 槽0 满 60s 释放
     check("60s后槽0 释放", b.slots[0].active is False)
 
-    # 手动兜底：取第一个空闲槽；4 槽全忙则忽略
+    # 手动/自动统一按槽精确触发 start_slot：可分别启 1~4，互不抢占
     b2 = TimerBank()
     assert b2.start_slot(0, t0) == 0
-    assert b2.manual_trigger(t0 + 1) == 1
-    assert b2.manual_trigger(t0 + 2) == 2
-    assert b2.manual_trigger(t0 + 3) == 3
-    check("4槽全忙 手动忽略", b2.manual_trigger(t0 + 4) is None)
+    assert b2.start_slot(1, t0 + 1) == 1
+    assert b2.start_slot(2, t0 + 2) == 2
+    assert b2.start_slot(3, t0 + 3) == 3
+    check("按槽精确启动 4槽全独立", all(s.active for s in b2.slots))
+    # 同槽再触发 => 重启该槽(重新归零)，不影响其它槽
+    assert b2.start_slot(1, t0 + 5) == 1
+    check("同槽重启归零", abs(b2.slots[1].started - (t0 + 5)) < 1e-9)
+    check("重启不影响其它槽", b2.slots[0].active is True and b2.slots[2].active is True)
+    # 非法槽忽略
+    check("非法槽忽略", b2.start_slot(9) is None)
 
     # 颜色阶段由 overlay 依据 protection 决定；此处验证保护期边界定义
     b3 = TimerBank()
@@ -103,15 +109,19 @@ def test_config():
     check("hud.boxes 为列表", isinstance(cfg["hud"]["boxes"], list))
     check("overlay 含计时颜色", "color_protection" in cfg["overlay"] and "color_ds" in cfg["overlay"])
     from dbdtimer.hotkey import to_vk
-    check("手动键可被识别", to_vk(cfg["keys"]["manual_start"][-1]) is not None)
-    # 快捷键统一为列表、含默认 quit
-    check("manual_start 为列表", isinstance(cfg["keys"]["manual_start"], list))
+    # 4 个手动键(分别控 1~4 号) + 锁定 + 退出
+    for i in range(1, 5):
+        k = f"manual_{i}"
+        check(f"{k} 存在且为列表", isinstance(cfg["keys"].get(k), list) and cfg["keys"][k])
+        check(f"{k} 主键可识别", to_vk(cfg["keys"][k][-1]) is not None)
     check("toggle_lock 为列表", isinstance(cfg["keys"]["toggle_lock"], list))
     check("quit 存在且为列表", isinstance(cfg["keys"].get("quit"), list)
           and len(cfg["keys"]["quit"]) >= 2)
-    # 三个快捷键不能全同(由设置页防重，这里仅校验格式可解析)
+    # 快捷键不能全同(由设置页防重，这里仅校验格式可解析)
     check("quit 各键可识别",
           all(to_vk(k) is not None for k in cfg["keys"]["quit"]))
+    # 兼容迁移：不应再出现旧 manual_start 键
+    check("无旧 manual_start", "manual_start" not in cfg["keys"])
 
 
 def test_hotkey_map():
@@ -189,11 +199,12 @@ def test_overlay_offscreen():
     bank = TimerBank()
     ov = OverlayWindow(cfg, bank)     # 无校正框 => 自由模式 4 行
     check("悬浮窗为4行", len(ov._labels) == 4)
-    check("手动分配第1槽", ov.manual_start() == 0)
-    check("手动分配第2槽", ov.manual_start() == 1)
-    check("手动分配第3槽", ov.manual_start() == 2)
-    check("手动分配第4槽", ov.manual_start() == 3)
-    check("4槽全忙 手动忽略", ov.manual_start() is None)
+    # 手动1~4 = start_slot(0..3)：按槽精确启动(互不抢占)
+    check("手动1号 -> 槽0", ov.start_slot(0) == 0)
+    check("手动2号 -> 槽1", ov.start_slot(1) == 1)
+    check("手动3号 -> 槽2", ov.start_slot(2) == 2)
+    check("手动4号 -> 槽3", ov.start_slot(3) == 3)
+    check("同槽再次触发 仍返回该槽(重启归零)", ov.start_slot(2) == 2)
 
     # 按槽启动：只动指定行
     ov.start_slot(2)

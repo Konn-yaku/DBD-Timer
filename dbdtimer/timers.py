@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """4 个独立 60s 正计时内核（纯逻辑、无 GUI 依赖，便于单测）。
 
-规则（与用户约定，自 4 计时器版本起）：
+规则（自 4 计时器版本起）：
 - 4 个槽位一一对应 4 名逃生者（槽 0..3）。
   某槽(幸存者)被下钩时，只启动/重启“该槽自己”的计时器，互不抢占——
   不再使用旧的“1 号占用就用 2 号”公共池规则。
-- 手动兜底 manual_trigger()：按下时并不知道对应哪位逃生者，
-  取当前第一个空闲槽启动；若 4 槽全忙则忽略。
+- 手动/自动触发统一走 start_slot(idx)：精确控制“第几位”，
+  自动识别按槽回调，手动快捷键 1~4 也按槽触发同一入口。
 - 每个槽从 0 正数到 60s：0~10s 为下钩保护期(黄色)，10~60s 为果断反击期(白色)。
 """
 import time
@@ -29,9 +29,9 @@ class TimerBank:
         self.protection = float(protection)
         self.slots = [TimerSlot(i) for i in range(max(1, int(n)))]
 
-    # ---- 事件入口 ----
+    # ---- 事件入口（手动快捷键与自动识别共用）----
     def start_slot(self, idx, now=None):
-        """(自动识别用) 启动/重启指定槽 idx 的计时器——幸存者槽与计时器一一对应。
+        """启动/重启指定槽 idx 的计时器——幸存者槽与计时器一一对应。
 
         若该槽已在计时（同一人 60s 内再次被下钩，如被救后又被挂），
         则视为一次新的下钩，重新从 0 开始。
@@ -45,17 +45,6 @@ class TimerBank:
         s.active = True
         s.started = now
         return s.idx
-
-    def manual_trigger(self, now=None):
-        """(手动兜底用) 启动第一个空闲槽。4 槽全忙返回 None。"""
-        if now is None:
-            now = time.monotonic()
-        for s in self.slots:
-            if not s.active:
-                s.active = True
-                s.started = now
-                return s.idx
-        return None
 
     def active_slots(self):
         return [s for s in self.slots if s.active]

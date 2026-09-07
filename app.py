@@ -2,7 +2,7 @@
 """DBD 下钩计时助手 - 入口。
 
 用法：
-  python app.py              正常使用（自动识别 + 鼠标侧键手动兜底）
+  python app.py              正常使用（自动识别 + 手动1~4键 精确兜底）
   python app.py --demo       无游戏演示悬浮窗效果（每几秒自动触发一次）
   python app.py --calibrate  校准：框选 4 个幸存者头像框
   python app.py --debug      打开调试：识别画面存到 debug/ 目录
@@ -90,7 +90,7 @@ def _make_tray_icon():
 
 
 def run_demo(app, cfg):
-    """演示模式：无需游戏，定时触发 4 行计时器，便于查看悬浮窗效果。"""
+    """演示模式：无需游戏，定时逐个启动 1~4 号计时器，便于查看悬浮窗效果。"""
     bank = TimerBank()
     # 演示以“解锁态”展示，方便看到锁图标/可拖动
     cfg["overlay"]["locked"] = False
@@ -99,22 +99,24 @@ def run_demo(app, cfg):
     state = {"n": 0}
 
     def auto_trigger():
+        idx = state["n"]
+        if idx < 4:
+            got = ov.start_slot(idx)   # 逐个启动 1~4 号
+            print(f"[{_now()}] demo 触发 第{idx + 1}号计时器 槽{got}")
         state["n"] += 1
-        got = ov.manual_start()
-        print(f"[{_now()}] demo 触发 第{state['n']}次 分配=槽{got}")
-        if state["n"] >= 5:   # 触发几次后只靠既有槽位自然走完(第5次应在4槽全忙时被忽略)
+        if state["n"] >= 4:   # 4 槽都启动后让其自然走完
             timer.stop()
 
     timer = QTimer()
     timer.timeout.connect(auto_trigger)
     timer.start(6000)
-    print("[demo] 悬浮窗已显示（贴近左侧头像列或屏幕左下），约每 6 秒自动触发一次。")
+    print("[demo] 悬浮窗已显示（贴近左侧头像列或屏幕左下），约每 6 秒逐个启动 1~4 号计时器。")
     print("       关闭终端即可退出。")
     return app.exec()
 
 
 def run_normal(app, cfg):
-    """正常模式：悬浮窗 + 手动热键 + 画面自动识别(需先校准)。"""
+    """正常模式：悬浮窗 + 手动1~4键精确计时 + 画面自动识别(需先校准)。"""
     bank = TimerBank()
     locator0 = gamewindow.WindowLocator(cfg["game"]["window_title"])
     boxes0 = cfg["hud"]["boxes"]
@@ -128,6 +130,9 @@ def run_normal(app, cfg):
 
     keys = cfg["keys"]
     source = capture.FrameSource(locator)
+
+    def _manual_keys_hint():
+        return "  ".join(f"{i + 1}号={_key_label(keys[f'manual_{i + 1}'])}" for i in range(4))
 
     # 识别引擎：图标识别（唯一方案；旧整框人脸比对已移除）。
     # 无训练模型时 det.ready=False，自动识别不触发(仅手动可用)。
@@ -147,13 +152,13 @@ def run_normal(app, cfg):
         print(f"[{_now()}] 自动识别到一次下钩 → 幸存者槽{idx} 启动{idx + 1}号计时器"
               f"{'' if ok else '(该槽已在计时，已重新归零)'}")
 
-    def _on_manual():
-        got = ov.manual_start()
-        cur = _key_label(keys["manual_start"])
-        label = "成功" if got is not None else "4槽都在计时(忽略)"
-        if got is not None:
-            label = f"成功 → {got + 1}号计时器"
-        print(f"[{_now()}] 手动触发 {cur} → 分配={label}")
+    def _make_manual(idx):
+        """手动快捷键 idx(0..3)：精确只启/重启第 idx+1 号计时器(该幸存者)。"""
+        def _on_manual():
+            ov.start_slot(idx)   # 有效槽总是成功(从0重新开始)
+            cur = _key_label(keys[f"manual_{idx + 1}"])
+            print(f"[{_now()}] 手动触发 {idx + 1}号 → 计时器{idx + 1} 从 0 开始（{cur}）")
+        return _on_manual
 
     def _on_lock():
         # 直接切换；由 lock_changed 信号统一刷新托盘/自动回锁/日志
@@ -169,7 +174,8 @@ def run_normal(app, cfg):
         """(重新)注册全部按键——快捷键设置保存后也靠它重建。"""
         watcher.clear()
         try:
-            watcher.add(keys["manual_start"], _on_manual)
+            for i in range(4):
+                watcher.add(keys.get(f"manual_{i + 1}", []), _make_manual(i))
             watcher.add(keys["toggle_lock"], _on_lock)
             watcher.add(keys["quit"], _on_quit)
         except ValueError as exc:
@@ -186,7 +192,10 @@ def run_normal(app, cfg):
         from dbdtimer.keycapture import ShortcutSettingsDialog
         from PySide6.QtWidgets import QDialog
         rows = [
-            ("manual_start", "手动计时（手动兜底开始计时）", keys["manual_start"]),
+            ("manual_1", "手动计时 1号逃生者", keys["manual_1"]),
+            ("manual_2", "手动计时 2号逃生者", keys["manual_2"]),
+            ("manual_3", "手动计时 3号逃生者", keys["manual_3"]),
+            ("manual_4", "手动计时 4号逃生者", keys["manual_4"]),
             ("toggle_lock", "锁定 / 解锁悬浮窗", keys["toggle_lock"]),
             ("quit", "退出程序", keys["quit"]),
         ]
@@ -202,7 +211,10 @@ def run_normal(app, cfg):
                 save_cfg(cfg)
                 _configure_watcher()
                 print(f"[{_now()}] 快捷键已更新："
-                      f"手动 {_key_label(keys['manual_start'])} | "
+                      f"手动1 {_key_label(keys['manual_1'])} | "
+                      f"手动2 {_key_label(keys['manual_2'])} | "
+                      f"手动3 {_key_label(keys['manual_3'])} | "
+                      f"手动4 {_key_label(keys['manual_4'])} | "
                       f"锁定 {_key_label(keys['toggle_lock'])} | "
                       f"退出 {_key_label(keys['quit'])}")
         finally:
@@ -240,6 +252,24 @@ def run_normal(app, cfg):
         ov.set_boxes(boxes)                 # 悬浮窗行数/锚定随之更新
         det.reset()                         # 新框对应新画面位置，重建状态基线
         print(f"[{_now()}] 校准结束：头像框 {len(boxes)} 个，已生效")
+
+    def _prompt_calibrate():
+        """首启未校准：弹窗引导用户去校准（发布版无控制台也需要）。"""
+        from PySide6.QtWidgets import QMessageBox
+        mb = QMessageBox(None)
+        mb.setWindowTitle("DBD 下钩计时助手")
+        mb.setIcon(QMessageBox.Icon.Information)
+        mb.setText("尚未校准头像框，自动识别暂不可用。")
+        mb.setInformativeText(
+            "进入 DBD 后，用「校准头像框…」在左侧 4 个逃生者状态图标上各框一个框。\n"
+            "在那之前，可用 手动1~4 键 精确控制对应 1~4 号计时器。"
+        )
+        cal_btn = mb.addButton("去校准…", QMessageBox.ButtonRole.AcceptRole)
+        mb.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
+        mb.setWindowModality(Qt.WindowModality.ApplicationModal)
+        mb.exec()
+        if mb.clickedButton() is cal_btn:
+            QTimer.singleShot(0, _open_calibration)
 
     _configure_watcher()
     watcher.start()
@@ -325,8 +355,8 @@ def run_normal(app, cfg):
         if not boxes:
             if not _hinted_no_boxes:
                 _hinted_no_boxes = True
-                print(f"[{_now()}] 尚未校准头像框，自动识别关闭。请先运行: "
-                      f"python app.py --calibrate （或按 {_key_label(keys['manual_start'])} 手动计时）")
+                print(f"[{_now()}] 尚未校准头像框，自动识别关闭。"
+                      f"可先用 手动1~4 键 精确计时（{_manual_keys_hint()}）")
             return
         # 关键：每次都主动调用 locator.rect() 触发窗口搜索(带1s缓存)，
         # 而不是先看 locator.found（found 只有在搜索后才会变真，会成死循环）
@@ -335,7 +365,7 @@ def run_normal(app, cfg):
             if not _hinted_no_window:
                 _hinted_no_window = True
                 print(f"[{_now()}] 未找到 DBD 窗口，自动识别等待中……"
-                      f"（仅手动 {_key_label(keys['manual_start'])} 可用）")
+                      f"（可先用 手动1~4 键 精确计时：{_manual_keys_hint()}）")
             return
         # 前台守卫：窗口被遮挡/最小化时，抓屏抓到的是遮挡物而非游戏画面，
         # 会疯狂误触发，故暂停识别；切回游戏窗口后自动恢复并重建基线。
@@ -364,18 +394,24 @@ def run_normal(app, cfg):
 
     print(f"[{_now()}] DBD 下钩计时助手已启动")
     print(f"        自动识别: 4 个计时器与 4 名逃生者一一对应（槽0~3→计时器1~4）")
-    print(f"        手动计时: 按 {_key_label(keys['manual_start'])} 启动一个空闲计时器")
+    print(f"        手动计时: 精确控制 1~4 号（{_manual_keys_hint()}）")
     print(f"        悬浮窗平时为鼠标穿透；锁定/退出等快捷键可在托盘图标右键→快捷键设置 中自由配置")
-    print(f"        当前：锁定 {_key_label(keys['toggle_lock'])} · 退出 {_key_label(keys['quit'])}")
+    print(f"        当前：锁定 {_key_label(keys['toggle_lock'])} · 退出 {_key_label(keys['quit'])} "
+          f"· 手动1 {_key_label(keys['manual_1'])}")
     print(f"        解锁后悬浮窗顶部会出现锁图标，点击即重新锁定(穿透)")
     if boxes:
         if det.ready:
             print(f"        已加载 {len(boxes)} 个头像框，自动识别开启（图标识别模式，已加载训练模型）")
         else:
             print(f"        已加载 {len(boxes)} 个头像框，但未找到图标模型 templates/icon_model.npz，"
-                  f"自动识别暂不可用（请先运行 train_icon_clf.py 训练，或仅用手动计时）")
+                  f"自动识别暂不可用（请先运行 train_icon_clf.py 训练，或仅用手动1~4键）")
     else:
-        print(f"        未校准头像框：自动识别关闭，仅手动 {_key_label(keys['manual_start'])} 可用")
+        print(f"        未校准头像框：自动识别关闭，可先用 手动1~4 键 精确计时（{_manual_keys_hint()}）")
+
+    # 首启未校准自动引导（发布版无控制台也适用）：弹出提示并提供“去校准”。
+    if not boxes:
+        QTimer.singleShot(800, _prompt_calibrate)
+
     return app.exec()
 
 
