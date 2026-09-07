@@ -28,33 +28,43 @@ def check(name, cond, extra=""):
 
 
 def test_timers():
-    print("== TimerBank 双槽规则 ==")
+    print("== TimerBank 4槽一一对应规则 ==")
     b = TimerBank()
     t0 = 1000.0
-    assert b.trigger(t0) == 0
-    assert b.trigger(t0 + 1) == 1
-    assert b.trigger(t0 + 2) is None          # 第三个忽略
+    # 对应槽启动：槽0/槽2 各自独立启动
+    assert b.start_slot(0, t0) == 0
+    assert b.start_slot(2, t0 + 1) == 2
+    check("槽1 未启动(独立互不抢占)", b.slots[1].active is False)
     assert len(b.active_slots()) == 2
 
-    r = b.sample(t0 + 5)
-    by_idx = {x["idx"]: x for x in r}
-    check("槽0 elapsed=5", abs(by_idx[0]["elapsed"] - 5.0) < 1e-6)
-    check("槽0 保护期=True", by_idx[0]["protection"] is True)
-    check("槽0 finished=False", by_idx[0]["finished"] is False)
+    # 同槽再次下钩 => 重启并归零
+    assert b.start_slot(0, t0 + 2) == 0
+    check("同槽重启刷新 started", abs(b.slots[0].started - (t0 + 2)) < 1e-9)
 
-    r = b.sample(t0 + 61)
-    check("61s 时两槽同时 finished",
-          len(r) == 2 and all(x["finished"] for x in r))
-    check("60s 后无活动槽", len(b.active_slots()) == 0)
-    assert b.trigger(t0 + 62) == 0            # 释放后可复用
-    check("释放后可再次使用槽0", True)
+    r = {x["idx"]: x for x in b.sample(t0 + 5)}
+    # 槽0 started=t0+2 -> elapsed=3 ; 槽2 started=t0+1 -> elapsed=4
+    check("槽0 elapsed=3", abs(r[0]["elapsed"] - 3.0) < 1e-6, f"{r}")
+    check("槽2 elapsed=4", abs(r[2]["elapsed"] - 4.0) < 1e-6, f"{r}")
+    check("槽0 保护期=True", r[0]["protection"] is True)
+    check("槽0 finished=False", r[0]["finished"] is False)
+
+    r = b.sample(t0 + 2 + 61)   # 槽0 满 60s 释放
+    check("60s后槽0 释放", b.slots[0].active is False)
+
+    # 手动兜底：取第一个空闲槽；4 槽全忙则忽略
+    b2 = TimerBank()
+    assert b2.start_slot(0, t0) == 0
+    assert b2.manual_trigger(t0 + 1) == 1
+    assert b2.manual_trigger(t0 + 2) == 2
+    assert b2.manual_trigger(t0 + 3) == 3
+    check("4槽全忙 手动忽略", b2.manual_trigger(t0 + 4) is None)
 
     # 颜色阶段由 overlay 依据 protection 决定；此处验证保护期边界定义
-    b2 = TimerBank()
-    b2.trigger(t0)
-    s = {x["idx"]: x for x in b2.sample(t0 + 9.99)}[0]
+    b3 = TimerBank()
+    b3.start_slot(0, t0)
+    s = {x["idx"]: x for x in b3.sample(t0 + 9.99)}[0]
     check("9.99s 仍在保护期", s["protection"] is True)
-    s = {x["idx"]: x for x in b2.sample(t0 + 10.01)}[0]
+    s = {x["idx"]: x for x in b3.sample(t0 + 10.01)}[0]
     check("10.01s 保护期结束", s["protection"] is False)
 
 
@@ -153,7 +163,7 @@ def test_watcher_arming():
 
 
 def test_overlay_offscreen():
-    print("== 悬浮窗(离屏) ==")
+    print("== 悬浮窗(离屏) 4行/按槽启动 ==")
     from PySide6.QtWidgets import QApplication
     from dbdtimer.overlay import OverlayWindow
     from dbdtimer.config import CONFIG_PATH
@@ -166,23 +176,30 @@ def test_overlay_offscreen():
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             orig_cfg = f.read()
     cfg["overlay"].update({"beep": False, "locked": False,
-                           "x": -1.0, "y": -1.0, "font_px": 52,
+                           "x": -1.0, "y": -1.0, "font_px": 24,
                            "color_protection": "#FFD600", "color_ds": "#FFFFFF"})
     bank = TimerBank()
-    ov = OverlayWindow(cfg, bank)
-    check("启动分配槽0", ov.slot_start() is True)
-    check("再分配槽1", ov.slot_start() is True)
-    check("第三次被忽略", ov.slot_start() is False)
+    ov = OverlayWindow(cfg, bank)     # 无校正框 => 自由模式 4 行
+    check("悬浮窗为4行", len(ov._labels) == 4)
+    check("手动分配第1槽", ov.manual_start() == 0)
+    check("手动分配第2槽", ov.manual_start() == 1)
+    check("手动分配第3槽", ov.manual_start() == 2)
+    check("手动分配第4槽", ov.manual_start() == 3)
+    check("4槽全忙 手动忽略", ov.manual_start() is None)
 
-    # 模拟时间流逝，验证数字与颜色
+    # 按槽启动：只动指定行
+    ov.start_slot(2)
+    check("按槽启动 行2 置 0.0", ov._labels[2]._text == "0.0")
+
+    # 模拟时间流逝，验证数字(一位小数)与颜色
     now = time.monotonic()
     bank.slots[0].started = now - 5.0     # 5s -> 黄色(保护期)
     bank.slots[1].started = now - 25.0    # 25s -> 白色(仅DS)
     ov._tick()
-    check("槽0 显示 5", ov._labels[0]._text == "5")
+    check("槽0 显示 5.0", ov._labels[0]._text == "5.0", ov._labels[0]._text)
     check("槽0 黄色", ov._labels[0]._color.name() == "#ffd600",
           ov._labels[0]._color.name())
-    check("槽1 显示 25", ov._labels[1]._text == "25")
+    check("槽1 显示 25.0", ov._labels[1]._text == "25.0", ov._labels[1]._text)
     check("槽1 白色", ov._labels[1]._color.name() == "#ffffff",
           ov._labels[1]._color.name())
 
@@ -359,14 +376,14 @@ def test_overlay_render_pixels():
     app = QApplication.instance() or QApplication(sys.argv)
     cfg = load_cfg()
     cfg["overlay"].update({"beep": False, "locked": False,
-                           "x": -1.0, "y": -1.0, "font_px": 52,
+                           "x": -1.0, "y": -1.0, "font_px": 24,
                            "color_protection": "#FFD600", "color_ds": "#FFFFFF"})
     bank = TimerBank()
     ov = OverlayWindow(cfg, bank)
     ov.show()
     now = time.monotonic()
-    ov.slot_start()
-    bank.slots[0].started = now - 5.0          # 黄色 '5'（保护期）
+    ov.start_slot(0)
+    bank.slots[0].started = now - 5.0          # 黄色 '5.0'（保护期）
     ov._tick()
     ov.repaint()
     app.processEvents()
@@ -380,8 +397,8 @@ def test_overlay_render_pixels():
             elif c.red() > 225 and c.green() > 225 and c.blue() > 225:
                 white += 1
     check("渲染出现黄色数字像素", yellow > 50, f"yellow={yellow}")
-    ov.slot_start()
-    bank.slots[1].started = now - 25.0         # 白色 '25'
+    ov.start_slot(1)
+    bank.slots[1].started = now - 25.0         # 白色 '25.0'
     ov._tick()
     ov.repaint()
     app.processEvents()

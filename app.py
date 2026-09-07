@@ -37,35 +37,42 @@ def _key_label(name):
 
 
 def run_demo(app, cfg):
-    """演示模式：无需游戏，定时触发两个槽位，便于查看悬浮窗效果。"""
+    """演示模式：无需游戏，定时触发 4 行计时器，便于查看悬浮窗效果。"""
     bank = TimerBank()
-    ov = overlay.OverlayWindow(cfg, bank)
+    ov = overlay.OverlayWindow(cfg, bank)   # 无校正框 => 自由排布(顶部控制条+4行)
     ov.show()
     state = {"n": 0}
 
     def auto_trigger():
         state["n"] += 1
-        got = ov.slot_start()
-        print(f"[{_now()}] demo 触发 第{state['n']}次 分配={got}")
-        if state["n"] >= 4:   # 触发几次后只靠既有槽位自然走完
+        got = ov.manual_start()
+        print(f"[{_now()}] demo 触发 第{state['n']}次 分配=槽{got}")
+        if state["n"] >= 5:   # 触发几次后只靠既有槽位自然走完(第5次应在4槽全忙时被忽略)
             timer.stop()
 
     timer = QTimer()
     timer.timeout.connect(auto_trigger)
     timer.start(6000)
-    print("[demo] 悬浮窗已显示（右下角），约每 6 秒自动触发一次。关闭终端即可退出。")
+    print("[demo] 悬浮窗已显示（贴近左侧头像列或屏幕左下），约每 6 秒自动触发一次。")
+    print("       关闭终端即可退出。")
     return app.exec()
 
 
 def run_normal(app, cfg):
     """正常模式：悬浮窗 + 手动热键 + 画面自动识别(需先校准)。"""
     bank = TimerBank()
-    ov = overlay.OverlayWindow(cfg, bank)
+    locator0 = gamewindow.WindowLocator(cfg["game"]["window_title"])
+    boxes0 = cfg["hud"]["boxes"]
+    # 4 行计时器由悬浮窗自行锚定到 4 个头像框左侧(行距=头像间距)
+    ov = overlay.OverlayWindow(cfg, bank, boxes=boxes0,
+                               rect_provider=lambda: locator0.rect())
     ov.show()
+
+    # 正常模式主循环里复用同一个定位器/源
+    locator = locator0
 
     keys = cfg["keys"]
     manual_label = _key_label(keys["manual_start"])
-    locator = gamewindow.WindowLocator(cfg["game"]["window_title"])
     source = capture.FrameSource(locator)
 
     # 引擎选择：icon=图标识别(需已训练模型) / face=旧整框比对 / auto=有图标模型用icon否则face
@@ -90,13 +97,18 @@ def run_normal(app, cfg):
     _was_fg = None   # None=尚未评估前台；False=在后台；True=在前台
 
     def _on_unhook(idx, ts, ov_ref):
-        ok = ov_ref.slot_start()
-        print(f"[{_now()}] 自动识别到一次下钩 → 槽{idx} 分配={'成功' if ok else '已满(忽略)'}")
+        # 槽号(0..3)即幸存者编号：只启动/重启该槽自己的计时器
+        ok = ov_ref.start_slot(idx)
+        print(f"[{_now()}] 自动识别到一次下钩 → 幸存者槽{idx} 启动{idx + 1}号计时器"
+              f"{'' if ok else '(该槽已在计时，已重新归零)'}")
 
     def _on_manual():
-        ok = ov.slot_start()
+        got = ov.manual_start()
         cur = _key_label(keys["manual_start"])
-        print(f"[{_now()}] 手动触发 {cur} → 分配={'成功' if ok else '两槽都在计时(忽略)'}")
+        label = "成功" if got is not None else "4槽都在计时(忽略)"
+        if got is not None:
+            label = f"成功 → {got + 1}号计时器"
+        print(f"[{_now()}] 手动触发 {cur} → 分配={label}")
 
     def _on_lock():
         ov.toggle_lock()
@@ -189,7 +201,8 @@ def run_normal(app, cfg):
     auto_timer.start()
 
     print(f"[{_now()}] DBD 下钩计时助手已启动")
-    print(f"        手动计时: 按 {manual_label}（可点悬浮窗左上『键』按钮随时改）")
+    print(f"        自动识别: 4 个计时器与 4 名逃生者一一对应（槽0~3→计时器1~4）")
+    print(f"        手动计时: 按 {manual_label} 启动一个空闲计时器（可点『键』按钮随时改）")
     print(f"        锁定/解锁悬浮窗: 点悬浮窗🔒按钮 或 {'+'.join(keys['toggle_lock'])}")
     print(f"        退出: Ctrl+Alt+Q")
     if boxes:

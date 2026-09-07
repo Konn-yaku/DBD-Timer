@@ -1,23 +1,39 @@
 # -*- coding: utf-8 -*-
-"""悬浮窗：透明置顶、可拖动、带锁按钮、黄/白双阶段数字计时。
+"""悬浮窗：透明置顶、可拖动、带锁按钮、4 行黄/白双阶段一位小数计时。
+
+与 4 名幸存者一一对应：
+- 自动识别模式：4 行计时器分别锚定到 4 个头像框的“左侧”（由校正框 boxes +
+  游戏窗口矩形实时换算，行距 = 头像间距，无需手动逐行对齐）。
+- 手动兜底模式（无校正框/未找到游戏窗口时）：退化为自由纵向排布，可整体拖动。
 
 交互规则：
-- 解锁态：整窗可拖动（按住任意空白/数字拖动），点锁按钮或热键可锁定。
-- 锁定态(默认)：仅禁止拖动、固定位置；锁按钮仍可点击，无需快捷键即可解锁。
+- 解锁态：可拖动。锚定模式下拖动会把窗口相对头像列的偏移存入 dx/dy，
+  松开后仍贴着头像列左侧（行距始终由头像框决定）。
+- 锁定态(默认语义同旧版)：仅禁止拖动、位置固定。
 - 可选 passthrough_on_lock=True：锁定同时鼠标穿透(不挡游戏)，此时只能靠热键解锁。
-- 数字从 0 正数到 60：0~10s 黄(下钩保护)，10~60s 白(果断反击)，到 60 槽位释放。
+- 数字一位小数正数到 60：0~10s 黄(下钩保护)，10~60s 白(果断反击)，到 60 释放。
 """
 import time
 import winsound
 
-from PySide6.QtCore import Qt, QTimer, QPoint, Signal
+from PySide6.QtCore import Qt, QTimer, QPoint, QRect, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QGuiApplication
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QToolButton,
-)
+from PySide6.QtWidgets import QWidget, QToolButton
 
 from .config import load as _load_cfg, save as _save_cfg
 from .timers import TimerBank
+
+# 数字右缘与头像左缘之间的留白(屏幕逻辑像素)
+_RIGHT_GAP = 8
+# 顶部控制条(键/锁按钮)高度与其下方到第 0 行的间距
+_CTRL_H = 24
+_CTRL_GAP = 4
+_MAX_TEXT = "60.0"   # 一位小数最长 4 字符，用于固定行宽避免抖动
+# 字号随分辨率自适应：font_px 是“参考 1920 宽(1080p)”时的字号；
+# 2K/4K 下头像列与左侧空隙等比变大，字号按窗口宽度比例放大以保持一致观感。
+_REF_WIDTH = 1920.0
+_FONT_SCALE_MIN = 0.7
+_FONT_SCALE_MAX = 3.0
 
 
 def _hex_color(hex_str, fallback="#FFFFFF"):
@@ -26,7 +42,7 @@ def _hex_color(hex_str, fallback="#FFFFFF"):
 
 
 class DigitLabel(QWidget):
-    """居中绘制带黑色描边的大号数字。"""
+    """右对齐绘制带黑色描边的一行数字（锚定模式下右缘贴着头像左侧）。"""
 
     def __init__(self, font_px, parent=None):
         super().__init__(parent)
@@ -48,6 +64,12 @@ class DigitLabel(QWidget):
             self._color = QColor(color)
             self.update()
 
+    def measure_width(self):
+        """固定行宽：容纳最长文本 + 描边余量，避免数字增减时整行晃动。"""
+        from PySide6.QtGui import QFontMetricsF
+        fm = QFontMetricsF(self.font())
+        return int(fm.horizontalAdvance(_MAX_TEXT)) + 8
+
     def paintEvent(self, _event):
         if not self._text:
             return
@@ -57,11 +79,13 @@ class DigitLabel(QWidget):
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(self._text)
         h = fm.height()
-        x = (self.width() - w) / 2.0
+        # 右对齐：文本右缘固定在 宽度-inset(3)，保证始终贴头像左侧
+        inset = 3
+        x = (self.width() - w) - inset
         y = (self.height() - h) / 2.0 + fm.ascent()
         # 黑色描边，保证亮/暗背景下都可读
         p.setPen(QColor(0, 0, 0, 220))
-        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2), (-1, -1), (1, 1)):
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, 1)):
             p.drawText(int(x + dx), int(y + dy), self._text)
         p.setPen(self._color)
         p.drawText(int(x), int(y), self._text)
@@ -72,21 +96,31 @@ class OverlayWindow(QWidget):
     # 用户点了“键”按钮，请求应用打开按键重绑对话框
     rebind_requested = Signal()
 
-    def __init__(self, cfg, bank: TimerBank, parent=None):
+    def __init__(self, cfg, bank: TimerBank, boxes=None, rect_provider=None, parent=None):
         super().__init__(parent)
         self._cfg = cfg
         self._bank = bank
+        self._boxes = list(boxes) if boxes else []
+        self._rect_provider = rect_provider
         self._locked = bool(cfg["overlay"]["locked"])
-        # 可选：锁定是否同时“鼠标穿透”。默认 False=仅禁止拖动(可用锁按钮解锁)。
         self._passthrough_lock = bool(cfg["overlay"].get("passthrough_on_lock", False))
         self._drag_off: QPoint | None = None
+        self._dragging = False
+        self._last_anchor = None      # (winX, winY) 上次锚定位置，用于拖动归算偏移
         self._beep = bool(cfg["overlay"]["beep"])
-        self._beep_p = [False, False]  # 是否已提示过“保护期结束”
+        self._beep_p = []             # 每行是否已提示过“保护期结束”
+        self._free_laid_out = False   # 自由模式只排一次版
 
         o = cfg["overlay"]
         self._c_prot = _hex_color(o.get("color_protection", "#FFD600"), "#FFD600")
         self._c_ds = _hex_color(o.get("color_ds", "#FFFFFF"), "#FFFFFF")
-        font_px = int(o.get("font_px", 52))
+        self._font_px = int(o.get("font_px", 24))
+        # dx/dy：锚定模式下相对“头像列左侧贴齐点”的用户偏移（可拖动微调，可负）
+        self._dx = float(o.get("dx", 0.0))
+        self._dy = float(o.get("dy", 0.0))
+
+        # 行数：有校正框则与其一一对应，否则(手动模式)按计时槽数 4
+        self._rows = len(self._boxes) if self._boxes else len(self._bank.slots)
 
         # 窗口属性：无边框 + 置顶 + 工具窗(不进Alt+Tab) + 透明背景 + 不抢焦点
         flags = (
@@ -98,49 +132,36 @@ class OverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
-        # ---- UI 结构 ----
-        root = QVBoxLayout(self)
-        root.setContentsMargins(10, 6, 10, 8)
-        root.setSpacing(2)
-
-        ctrl_row = QHBoxLayout()
-
+        # ---- 顶部控制条：键 / 锁 按钮 ----
         self._key_btn = QToolButton(self)
-        self._key_btn.setFixedSize(22, 22)
+        self._key_btn.setFixedSize(18, 18)
         self._key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._key_btn.setStyleSheet(
-            "QToolButton{border:none;background:transparent;font-size:12px;color:white;}"
+            "QToolButton{border:none;background:transparent;font-size:11px;color:white;}"
         )
         self._key_btn.setText("键")
         self._key_btn.setToolTip("设置手动计时按键：点击后按一下你想要的键")
         self._key_btn.clicked.connect(self.rebind_requested.emit)
-        ctrl_row.addWidget(self._key_btn)
 
         self._lock_btn = QToolButton(self)
-        self._lock_btn.setFixedSize(22, 22)
+        self._lock_btn.setFixedSize(18, 18)
         self._lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._lock_btn.setStyleSheet(
-            "QToolButton{border:none;background:transparent;font-size:14px;color:white;}"
+            "QToolButton{border:none;background:transparent;font-size:12px;color:white;}"
         )
-        self._lock_btn.setToolTip("锁定/解锁位置（锁定后固定，点此或 Ctrl+Alt+L 解锁）")
+        self._lock_btn.setToolTip("锁定/解锁位置（点此或 Ctrl+Alt+L 解锁）")
         self._lock_btn.clicked.connect(self.toggle_lock)
-        ctrl_row.addWidget(self._lock_btn)
-        ctrl_row.addStretch(1)
-        root.addLayout(ctrl_row)
 
+        # ---- 4 行数字 ----
         self._labels = []
-        for _ in range(2):
-            lab = DigitLabel(font_px)
-            lab.setFixedWidth(int(font_px * 2.4))
-            lab.setFixedHeight(font_px + 14)
-            root.addWidget(lab, alignment=Qt.AlignmentFlag.AlignHCenter)
+        for _ in range(self._rows):
+            lab = DigitLabel(self._font_px, self)
+            lab.set_value("")
             self._labels.append(lab)
-        self._labels[0].set_value("")
-        self._labels[1].set_value("")
+        self._beep_p = [False] * self._rows
 
-        # 固定窗口尺寸，避免槽位增减导致窗口抖动
-        self.setFixedSize(int(font_px * 2.4) + 48, 28 + 2 * (font_px + 14) + 14)
-
+        self.setFixedHeight(100)  # 占位，几何由 _update_geometry 决定
+        self._font_applied = self._font_px   # 当前实际应用的字号
         # 刷新循环
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -148,21 +169,154 @@ class OverlayWindow(QWidget):
 
         self._apply_lock()
         self._place_initial()
+        self._update_geometry()
         self._update_lock_icon()
 
-    # ---------- 位置 / 拖动 ----------
+    # =========================================================
+    # 几何：锚定到 4 个头像框左侧 / 或自由排布
+    # =========================================================
+    def _game_rect(self):
+        try:
+            return self._rect_provider() if self._rect_provider else None
+        except Exception:
+            return None
+
+    def _apply_res_font(self, win_w_logical):
+        """按游戏窗口逻辑宽度自动缩放字号，保证 1080p/2K/4K 观感一致。
+
+        font_px 为 1080p(宽约1920逻辑像素)下的字号；更高分辨率按宽度比例放大。
+        """
+        if win_w_logical <= 0:
+            return
+        scale = min(max(win_w_logical / _REF_WIDTH, _FONT_SCALE_MIN), _FONT_SCALE_MAX)
+        px = max(8, int(round(self._font_px * scale)))
+        if px == self._font_applied:
+            return
+        self._font_applied = px
+        for lab in self._labels:
+            font = QFont("Consolas")
+            font.setPixelSize(px)
+            font.setBold(True)
+            lab.setFont(font)
+
+    @property
+    def _label_font_px(self):
+        """当前生效字号(标签字体已按分辨率设置过)。"""
+        return self._font_applied
+
     def _place_initial(self):
+        """自由模式首次定位：用配置 x,y，否则放左侧中段（靠近头像列常驻位置）。"""
         x = self._cfg["overlay"].get("x", -1.0)
         y = self._cfg["overlay"].get("y", -1.0)
         if x >= 0 and y >= 0:
             self.move(int(x), int(y))
             return
+        # 无记录时，大致放到头像列左侧区域（左侧 4%~8%、纵向 38%~70%）
+        rect = self._game_rect()
+        if rect:
+            l, t, r, b = rect
+            dpr = self.devicePixelRatioF() or 1.0
+            self.move(int(l / dpr + (r - l) * 0.02 / dpr),
+                      int(t / dpr + (b - t) * 0.40 / dpr))
+            return
         screen = QGuiApplication.primaryScreen().availableGeometry()
         self.move(screen.right() - self.width() - 24, screen.bottom() - self.height() - 24)
 
+    def _compute_anchor(self):
+        """由游戏窗口矩形 + 头像框算出每行标签(窗口内)几何；无矩形返回 None。
+
+        返回 (winX, winY, winW, winH, label_rects)
+          label_rects: list[QRect] 每行标签在窗口内的位置。
+        """
+        rect = self._game_rect()
+        if rect is None or not self._boxes:
+            return None
+        l, t, r, b = rect
+        dpr = self.devicePixelRatioF() or 1.0
+        # Win32 矩形是物理像素；Qt 窗口坐标是逻辑像素 -> 先统一换算到逻辑坐标
+        l = l / dpr
+        t = t / dpr
+        W = (r / dpr) - l
+        H = (b / dpr) - t
+        # 字号随分辨率自动缩放(先按实际宽度调整，measure_width 依赖字体)
+        self._apply_res_font(W)
+        font_px = self._label_font_px
+        # 头像列左侧统一右缘：所有行取最靠左头像的左边(减留白) -> 数字成整齐一列
+        leftmost = min(box[0] for box in self._boxes)
+        right_edge = l + leftmost * W - _RIGHT_GAP + self._dx
+        centers = []
+        for box in self._boxes:
+            cy = t + ((box[1] + box[3]) / 2.0) * H + self._dy
+            centers.append(cy)
+        label_w = self._labels[0].measure_width()
+        label_h = font_px + 10
+        row_top_margin = _CTRL_H + _CTRL_GAP
+        y0 = centers[0]
+        win_y = y0 - label_h / 2.0 - row_top_margin
+        win_x = right_edge - label_w
+        win_h = row_top_margin + (centers[-1] - y0) + label_h
+        win_w = max(label_w, _CTRL_H * 3 + 8)
+        rects = []
+        for i, cy in enumerate(centers):
+            # 标签在窗口内的 y：使其屏幕中心恰为 cy(头像中心)
+            y_in_win = row_top_margin + (cy - y0)
+            rects.append(QRect(0, int(y_in_win), int(label_w), int(label_h)))
+        return (int(win_x), int(win_y), int(win_w), int(win_h), rects)
+
+    def _apply_anchor(self, geo):
+        win_x, win_y, win_w, win_h, rects = geo
+        if (win_x, win_y, win_w, win_h) != (self.x(), self.y(), self.width(), self.height()):
+            self.setGeometry(win_x, win_y, win_w, win_h)
+        for lab, r in zip(self._labels, rects):
+            lab.setGeometry(r)
+        self._last_anchor = (win_x, win_y)
+
+    def _apply_free_layout(self):
+        """自由模式(无校正框/未找到游戏窗口)：顶部控制条 + 各行均匀下排。"""
+        if self._free_laid_out:
+            return
+        self._free_laid_out = True
+        self._apply_res_font(_REF_WIDTH)   # 无窗口时按参考字号显示
+        font_px = self._label_font_px
+        label_w = self._labels[0].measure_width()
+        label_h = font_px + 12
+        row_step = label_h + 8
+        row_top_margin = _CTRL_H + _CTRL_GAP
+        win_w = max(label_w, _CTRL_H * 3 + 8)
+        win_h = row_top_margin + self._rows * row_step + 4
+        for i, lab in enumerate(self._labels):
+            lab.setGeometry(QRect(0, row_top_margin + i * row_step, label_w, label_h))
+        self.setFixedSize(win_w, win_h)
+        self.setFixedHeight(win_h)
+
+    def _layout_controls(self, win_w):
+        self._key_btn.setGeometry(QRect(4, 3, 18, 18))
+        self._lock_btn.setGeometry(QRect(24, 3, 18, 18))
+
+    def _update_geometry(self):
+        if self._dragging:
+            return
+        if self._boxes and self._rect_provider:
+            geo = self._compute_anchor()
+            if geo is not None:
+                self._free_laid_out = False
+                self._apply_anchor(geo)
+                self._layout_controls(geo[2])
+                return
+        # 自由模式
+        self._last_anchor = None
+        self._apply_free_layout()
+        self._layout_controls(self.width())
+
+    # ---------- 位置 / 拖动 ----------
     def _save_pos(self):
-        self._cfg["overlay"]["x"] = float(self.x())
-        self._cfg["overlay"]["y"] = float(self.y())
+        if self._boxes and self._rect_provider and self._last_anchor is not None:
+            # 锚定模式：存 dx/dy 偏移
+            self._cfg["overlay"]["dx"] = float(self._dx)
+            self._cfg["overlay"]["dy"] = float(self._dy)
+        else:
+            self._cfg["overlay"]["x"] = float(self.x())
+            self._cfg["overlay"]["y"] = float(self.y())
         _save_cfg(self._cfg)
 
     def mousePressEvent(self, event):
@@ -170,6 +324,7 @@ class OverlayWindow(QWidget):
             self._drag_off = (
                 event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             )
+            self._dragging = True
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -179,8 +334,14 @@ class OverlayWindow(QWidget):
 
     def mouseReleaseEvent(self, event):
         if self._drag_off is not None:
+            self._dragging = False
+            # 锚定模式：把拖动产生的位移折算进 dx/dy，松开后仍贴齐
+            if self._last_anchor is not None:
+                self._dx += (self.x() - self._last_anchor[0])
+                self._dy += (self.y() - self._last_anchor[1])
             self._drag_off = None
             self._save_pos()
+            self._update_geometry()
         super().mouseReleaseEvent(event)
 
     # ---------- 锁定 ----------
@@ -198,23 +359,36 @@ class OverlayWindow(QWidget):
         self.set_locked(not self._locked)
 
     def _apply_lock(self):
-        # 默认：锁定 = 仅禁止拖动(鼠标事件已在上层 handler 里被拦下)，锁按钮仍可点击解锁。
-        # 可选(passthrough_on_lock=True)：锁定额外启用系统级鼠标穿透，此时只能靠热键解锁。
         if self._passthrough_lock:
             self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, self._locked)
             self.show()
 
     # ---------- 计时入口 / 刷新 ----------
-    def slot_start(self):
-        """外部(手动热键/自动识别)触发一次下钩计时。返回是否成功分配了槽位。"""
-        idx = self._bank.trigger()
-        if idx is not None:
+    def manual_start(self):
+        """手动兜底：启动第一个空闲槽(不知道对应哪位逃生者)。返回启动槽号或 None。"""
+        idx = self._bank.manual_trigger()
+        if idx is not None and idx < len(self._labels):
             self._beep_p[idx] = False
-            self._labels[idx].set_value("0")
-            self.raise_()   # 置顶悬浮窗，避免被游戏画面遮挡时看不到数字
-        return idx is not None
+            self._labels[idx].set_value("0.0")
+            self.raise_()
+        return idx
+
+    def start_slot(self, idx):
+        """自动识别：启动/重启指定幸存者槽 idx 的计时器(槽=计时器一一对应)。
+        返回启动的槽号或 None。"""
+        got = self._bank.start_slot(idx)
+        if got is not None and idx < len(self._labels):
+            self._beep_p[idx] = False
+            self._labels[idx].set_value("0.0")
+            self.raise_()
+        return got
+
+    def _fmt(self, elapsed):
+        return f"{min(elapsed, self._bank.duration):.1f}"
 
     def _tick(self):
+        # 先维持几何(锚定/拖动状态下的贴齐)
+        self._update_geometry()
         results = self._bank.sample()
         active = {r["idx"]: r for r in results}
         for i, lab in enumerate(self._labels):
@@ -227,14 +401,13 @@ class OverlayWindow(QWidget):
                     self._beep_finish()
                 lab.set_value("")
                 continue
-            val = min(int(r["elapsed"]), int(self._bank.duration))
-            lab.set_value(str(val))
+            lab.set_value(self._fmt(r["elapsed"]))
             lab.set_color(self._c_prot if r["protection"] else self._c_ds)
             if not r["protection"] and not self._beep_p[i]:
                 self._beep_p[i] = True
                 if self._beep:
                     self._beep_phase()
-        # 保底：无活动槽时也刷新一下空标签
+        # 保底：无活动槽时也刷新空标签
         for i, lab in enumerate(self._labels):
             if i not in active:
                 lab.set_value("")
@@ -242,7 +415,6 @@ class OverlayWindow(QWidget):
     # ---------- 提示音 ----------
     @staticmethod
     def _beep_phase():
-        # 保护期(10s)结束：一声短促低音
         try:
             winsound.Beep(880, 90)
         except Exception:
@@ -250,7 +422,6 @@ class OverlayWindow(QWidget):
 
     @staticmethod
     def _beep_finish():
-        # 60s 到期：两声提示
         try:
             winsound.Beep(1100, 110)
             time.sleep(0.05)
@@ -263,7 +434,7 @@ class OverlayWindow(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(10, 10, 12, 90))  # 半透明深色底板提升数字可读性
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+        p.setBrush(QColor(10, 10, 12, 70))  # 半透明深色底板提升数字可读性(极淡)
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
         p.end()
         super().paintEvent(event)
