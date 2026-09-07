@@ -163,7 +163,12 @@ def run_normal(app, cfg):
             print(f"[hotkey] 快捷键无效：{exc}（已忽略该项）")
 
     def _open_shortcuts():
-        """托盘右键→快捷键设置：在一个页面里编辑全部快捷键。"""
+        """托盘右键→快捷键设置：在一个页面里编辑全部快捷键。
+
+        注意：托盘菜单是系统原生菜单，若在其 triggered 里同步 exec()，
+        原生菜单仍抓着输入焦点导致新对话框点不到——故调用方用
+        QTimer.singleShot(0) 延迟到菜单关闭后再打开。
+        """
         from dbdtimer.config import save as save_cfg
         from dbdtimer.keycapture import ShortcutSettingsDialog
         from PySide6.QtWidgets import QDialog
@@ -174,7 +179,10 @@ def run_normal(app, cfg):
         ]
         watcher.stop()   # 改键期间暂停监听，避免“用来改键的那次按键”同时触发
         try:
-            dlg = ShortcutSettingsDialog(ov, rows)
+            # parent=None：避免挂在“鼠标穿透/工具窗”悬浮窗下导致无法正常激活；
+            # 应用级模态由 exec() 直接弹出(原生菜单已关闭，可正常获得焦点)。
+            dlg = ShortcutSettingsDialog(None, rows)
+            dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
             if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_bindings:
                 for kid, binding in dlg.result_bindings.items():
                     keys[kid] = binding
@@ -246,7 +254,8 @@ def run_normal(app, cfg):
         _tray_auto_act.setChecked(_auto_relock_s > 0)
         _tray_auto_act.triggered.connect(_set_auto_relock)
         menu.addSeparator()
-        menu.addAction("快捷键设置…").triggered.connect(_open_shortcuts)
+        menu.addAction("快捷键设置…").triggered.connect(
+            lambda: QTimer.singleShot(0, _open_shortcuts))
         menu.addSeparator()
         menu.addAction("退出").triggered.connect(_on_quit)
         _tray = QSystemTrayIcon(_make_tray_icon())
