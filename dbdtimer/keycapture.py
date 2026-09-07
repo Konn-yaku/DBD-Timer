@@ -165,7 +165,7 @@ class ShortcutSettingsDialog(QDialog):
         self.setMinimumWidth(460)
 
     def _edit(self, kid):
-        title = {k: self._row_title(kid)}.get(kid, "")
+        title = self._row_title(kid)
         dlg = ComboCaptureDialog(current_label=binding_label(self._rows[kid]),
                                  title=f"修改：{title}", parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.binding:
