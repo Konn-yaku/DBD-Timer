@@ -1,0 +1,11 @@
+# 虚拟环境
+.venv/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 运行时/个人配置与校准数据（分辨率相关、含屏幕截图，不进仓库）
+debug/
+config.json
+templates/
