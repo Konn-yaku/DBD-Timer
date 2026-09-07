@@ -103,7 +103,15 @@ def test_config():
     check("hud.boxes 为列表", isinstance(cfg["hud"]["boxes"], list))
     check("overlay 含计时颜色", "color_protection" in cfg["overlay"] and "color_ds" in cfg["overlay"])
     from dbdtimer.hotkey import to_vk
-    check("手动键可被识别", to_vk(cfg["keys"]["manual_start"]) is not None)
+    check("手动键可被识别", to_vk(cfg["keys"]["manual_start"][-1]) is not None)
+    # 快捷键统一为列表、含默认 quit
+    check("manual_start 为列表", isinstance(cfg["keys"]["manual_start"], list))
+    check("toggle_lock 为列表", isinstance(cfg["keys"]["toggle_lock"], list))
+    check("quit 存在且为列表", isinstance(cfg["keys"].get("quit"), list)
+          and len(cfg["keys"]["quit"]) >= 2)
+    # 三个快捷键不能全同(由设置页防重，这里仅校验格式可解析)
+    check("quit 各键可识别",
+          all(to_vk(k) is not None for k in cfg["keys"]["quit"]))
 
 
 def test_hotkey_map():

@@ -34,8 +34,10 @@ def _now():
 
 
 def _key_label(name):
-    name = name if isinstance(name, str) else "+".join(name)
-    return _KEY_LABEL.get(name, name)
+    """把快捷键(字符串或列表)显示成可读文案，鼠标侧键等映射成中文。"""
+    if isinstance(name, str):
+        return _KEY_LABEL.get(name, name)
+    return "+".join(_KEY_LABEL.get(p, p) for p in name)
 
 
 def _make_tray_icon():
@@ -103,7 +105,6 @@ def run_normal(app, cfg):
     locator = locator0
 
     keys = cfg["keys"]
-    manual_label = _key_label(keys["manual_start"])
     source = capture.FrameSource(locator)
 
     # 引擎选择：icon=图标识别(需已训练模型) / face=旧整框比对 / auto=有图标模型用icon否则face
@@ -152,32 +153,39 @@ def run_normal(app, cfg):
     watcher = hotkey.KeyWatcher()
 
     def _configure_watcher():
-        """(重新)注册全部按键——重绑手动键后也靠它重建。"""
+        """(重新)注册全部按键——快捷键设置保存后也靠它重建。"""
         watcher.clear()
         try:
             watcher.add(keys["manual_start"], _on_manual)
             watcher.add(keys["toggle_lock"], _on_lock)
+            watcher.add(keys["quit"], _on_quit)
         except ValueError as exc:
-            print(f"[hotkey] {exc}")
-        watcher.add(["Ctrl", "Alt", "Q"], _on_quit)   # 退出
+            print(f"[hotkey] 快捷键无效：{exc}（已忽略该项）")
 
-    def _on_rebind():
+    def _open_shortcuts():
+        """托盘右键→快捷键设置：在一个页面里编辑全部快捷键。"""
         from dbdtimer.config import save as save_cfg
-        from dbdtimer.keycapture import KeyCaptureDialog
-        # 捕获期间暂停按键监听：避免“用来改键的那次按键”同时触发计时
-        watcher.stop()
-        accepted = False
+        from dbdtimer.keycapture import ShortcutSettingsDialog
+        from PySide6.QtWidgets import QDialog
+        rows = [
+            ("manual_start", "手动计时（手动兜底开始计时）", keys["manual_start"]),
+            ("toggle_lock", "锁定 / 解锁悬浮窗", keys["toggle_lock"]),
+            ("quit", "退出程序", keys["quit"]),
+        ]
+        watcher.stop()   # 改键期间暂停监听，避免“用来改键的那次按键”同时触发
         try:
-            dlg = KeyCaptureDialog(current=_key_label(keys["manual_start"]), parent=ov)
-            if dlg.exec() == 1 and dlg.key_name:          # QDialog.Accepted
-                keys["manual_start"] = dlg.key_name
+            dlg = ShortcutSettingsDialog(ov, rows)
+            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_bindings:
+                for kid, binding in dlg.result_bindings.items():
+                    keys[kid] = binding
                 save_cfg(cfg)
-                _configure_watcher()                      # 用新键重建监听
-                accepted = True
+                _configure_watcher()
+                print(f"[{_now()}] 快捷键已更新："
+                      f"手动 {_key_label(keys['manual_start'])} | "
+                      f"锁定 {_key_label(keys['toggle_lock'])} | "
+                      f"退出 {_key_label(keys['quit'])}")
         finally:
-            watcher.start()                               # 重新武装后再恢复监听
-        if accepted:
-            print(f"[{_now()}] 手动计时键已改为: {_key_label(dlg.key_name)}")
+            watcher.start()   # 重新武装后再恢复监听
 
     _configure_watcher()
     watcher.start()
@@ -238,12 +246,7 @@ def run_normal(app, cfg):
         _tray_auto_act.setChecked(_auto_relock_s > 0)
         _tray_auto_act.triggered.connect(_set_auto_relock)
         menu.addSeparator()
-        menu.addAction("改手动计时键…").triggered.connect(_on_rebind)
-        menu.addSeparator()
-        _i1 = menu.addAction(f"锁定/解锁: {'+'.join(keys['toggle_lock'])}")
-        _i1.setEnabled(False)
-        _i2 = menu.addAction("退出: Ctrl+Alt+Q")
-        _i2.setEnabled(False)
+        menu.addAction("快捷键设置…").triggered.connect(_open_shortcuts)
         menu.addSeparator()
         menu.addAction("退出").triggered.connect(_on_quit)
         _tray = QSystemTrayIcon(_make_tray_icon())
@@ -266,7 +269,7 @@ def run_normal(app, cfg):
             if not _hinted_no_boxes:
                 _hinted_no_boxes = True
                 print(f"[{_now()}] 尚未校准头像框，自动识别关闭。请先运行: "
-                      f"python app.py --calibrate （或按 {manual_label} 手动计时）")
+                      f"python app.py --calibrate （或按 {_key_label(keys['manual_start'])} 手动计时）")
             return
         # 关键：每次都主动调用 locator.rect() 触发窗口搜索(带1s缓存)，
         # 而不是先看 locator.found（found 只有在搜索后才会变真，会成死循环）
@@ -274,7 +277,8 @@ def run_normal(app, cfg):
         if win_rect is None:
             if not _hinted_no_window:
                 _hinted_no_window = True
-                print(f"[{_now()}] 未找到 DBD 窗口，自动识别等待中……（仅手动 {manual_label} 可用）")
+                print(f"[{_now()}] 未找到 DBD 窗口，自动识别等待中……"
+                      f"（仅手动 {_key_label(keys['manual_start'])} 可用）")
             return
         # 前台守卫：窗口被遮挡/最小化时，抓屏抓到的是遮挡物而非游戏画面，
         # 会疯狂误触发，故暂停识别；切回游戏窗口后自动恢复并重建基线。
@@ -303,10 +307,9 @@ def run_normal(app, cfg):
 
     print(f"[{_now()}] DBD 下钩计时助手已启动")
     print(f"        自动识别: 4 个计时器与 4 名逃生者一一对应（槽0~3→计时器1~4）")
-    print(f"        手动计时: 按 {manual_label} 启动一个空闲计时器（可改：托盘图标右键→改手动计时键）")
-    print(f"        悬浮窗平时为鼠标穿透; 控制: 右下角托盘图标右键 或 快捷键:")
-    print(f"          {', '.join(['+'.join(keys['toggle_lock']), 'Ctrl+Alt+Q'])}"
-          f"（锁定/解锁 · 退出）")
+    print(f"        手动计时: 按 {_key_label(keys['manual_start'])} 启动一个空闲计时器")
+    print(f"        悬浮窗平时为鼠标穿透；锁定/退出等快捷键可在托盘图标右键→快捷键设置 中自由配置")
+    print(f"        当前：锁定 {_key_label(keys['toggle_lock'])} · 退出 {_key_label(keys['quit'])}")
     print(f"        解锁后悬浮窗顶部会出现锁图标，点击即重新锁定(穿透)")
     if boxes:
         if getattr(det, "is_icon", False):
@@ -316,7 +319,7 @@ def run_normal(app, cfg):
                   + (f"（hooked模板{len(det.pool_hooked)}张/downed模板{len(det.pool_downed)}张）"
                      if det.has_templates else "（未拍模板：simple 模式，倒地拉起可能误报）"))
     else:
-        print(f"        未校准头像框：自动识别关闭，仅手动 {manual_label} 可用")
+        print(f"        未校准头像框：自动识别关闭，仅手动 {_key_label(keys['manual_start'])} 可用")
     return app.exec()
 
 

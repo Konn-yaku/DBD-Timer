@@ -19,6 +19,7 @@ _KEY_MAP = {
     "ESC": 0x1B, "SPACE": 0x20, "HOME": 0x24, "END": 0x23,
     "PGUP": 0x21, "PGDN": 0x22, "INS": 0x2D, "DEL": 0x2E,
     "ENTER": 0x0D, "TAB": 0x09, "BACKSPACE": 0x08,
+    "LEFT": 0x25, "RIGHT": 0x27, "UP": 0x26, "DOWN": 0x28,
     # 鼠标侧键：XBUTTON1=下方/后退键，XBUTTON2=上方/前进键（别名 MOUSE4/MOUSE5）
     "XBUTTON1": 0x05, "XBUTTON2": 0x06,
     "MOUSE4": 0x05, "MOUSE5": 0x06,
@@ -79,6 +80,21 @@ def key_candidates():
 def canonical_name(vk: int):
     """虚拟键码 -> 规范化名称（如 0x41 -> 'A'，0x05 -> 'XBUTTON1'）。"""
     return _CANON.get(vk)
+
+
+# ---- 修饰键辅助（快捷键组合捕获用） ----
+_MOD_NAMES = ("CTRL", "ALT", "SHIFT", "WIN")
+_MOD_VKS = {n: to_vk(n) for n in _MOD_NAMES}
+
+
+def mods_down():
+    """返回当前按下的修饰键，按固定顺序 ['CTRL','ALT','SHIFT','WIN'] 子集。"""
+    return [n for n in _MOD_NAMES if key_down(_MOD_VKS[n])]
+
+
+def is_mod_key(name: str):
+    """是否为修饰键(Ctrl/Alt/Shift/Win)。"""
+    return name.upper() in _MOD_NAMES
 
 
 class KeyWatcher(QObject):

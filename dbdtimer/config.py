@@ -30,12 +30,13 @@ DEFAULTS = {
         "boxes": [],
     },
     "keys": {
-        # 手动兜底：自己看到/听到下钩时按一下，立即启动一个计时槽。
-        # 实测：该用户鼠标的"下侧键"在 Windows 里是 XBUTTON2。
-        # 若换了鼠标/按键不符，改成 XBUTTON1 即可。
-        "manual_start": "XBUTTON2",
+        # 手动兜底：自己看到/听到下钩时按一下，立即启动一个空闲计时槽。
+        # 统一存为列表（可含 Ctrl/Alt/Shift/Win 修饰），例如 ['XBUTTON2'] 或 ['Ctrl','Alt','M']。
+        "manual_start": ["XBUTTON2"],
         # 悬浮窗锁定/解锁切换（锁定后鼠标穿透；解锁后可拖动）
         "toggle_lock": ["Ctrl", "Alt", "L"],
+        # 退出程序
+        "quit": ["Ctrl", "Alt", "Q"],
     },
     "overlay": {
         # 悬浮窗记住的位置（屏幕像素，Qt 逻辑坐标）。解锁拖动结束或锁定时写回。
@@ -93,6 +94,15 @@ def load():
             _deep_update(data, user)
         except Exception as exc:  # 配置损坏时静默回退默认
             print(f"[config] 读取 config.json 失败，使用默认值：{exc}")
+    # 把三个快捷键统一规范化成列表（兼容旧版字符串/缺失 quit 的历史配置）
+    for _k in ("manual_start", "toggle_lock", "quit"):
+        _v = data["keys"].get(_k)
+        if isinstance(_v, (list, tuple)):
+            data["keys"][_k] = [str(x) for x in _v]
+        elif isinstance(_v, str) and _v:
+            data["keys"][_k] = [_v]
+        else:
+            data["keys"][_k] = [str(x) for x in DEFAULTS["keys"].get(_k, [])]
     return data
 
 
