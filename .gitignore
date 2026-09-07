@@ -16,6 +16,9 @@ build/
 dist/
 *.log
 
+# 发布用压缩包（release zip）
+DBD下钩计时助手.zip
+
 # 打包脚本与说明：仅供本机手动打包使用，不入仓库
 dbdtimer.spec
 打包成exe.bat
