@@ -30,11 +30,17 @@ RAW_DIR = os.path.join(BASE, "samples", "raw")
 ICONS_DIR = os.path.join(BASE, "templates", "icons")
 DONE_FILE = os.path.join(BASE, "samples", "label_done.txt")
 
-# 按键(ASCII) -> (类别, BGR颜色)
+# 按键(ASCII) -> 类别名
 KEY2LABEL = {
-    ord("1"): ("hooked", (0, 0, 255)),      # 红
-    ord("2"): ("sacrificed", (0, 120, 255)),  # 橙
-    ord("3"): ("normal", (0, 255, 0)),       # 绿
+    ord("1"): "hooked",
+    ord("2"): "sacrificed",
+    ord("3"): "normal",
+}
+# 类别名 -> BGR 显示色
+LABEL2COLOR = {
+    "hooked": (0, 0, 255),       # 红
+    "sacrificed": (0, 120, 255), # 橙
+    "normal": (0, 255, 0),       # 绿
 }
 KEY_HELP = "1=上钩  2=献祭  3=正常   空格=全正常  a=跳过本帧  q=退出"
 
@@ -63,7 +69,7 @@ def _annotate_frame(img, boxes, picked, cursor):
     for i, (box, lab) in enumerate(zip(boxes, picked)):
         x0 = int(box[0] * W); y0 = int(box[1] * H)
         x1 = int(box[2] * W); y1 = int(box[3] * H)
-        col = KEY2LABEL.get(ord(lab), (0, 0, 0))[1] if lab else (255, 255, 255)
+        col = LABEL2COLOR.get(lab, (255, 255, 255)) if lab else (255, 255, 255)
         if i == cursor:
             col = (0, 255, 255)  # 当前待输入槽：黄
         cv2.rectangle(vis, (x0, y0), (x1, y1), col, 3)
@@ -112,8 +118,7 @@ def main():
                 key = cv2.waitKey(0) & 0xFF
 
                 if key in KEY2LABEL:
-                    label, _ = KEY2LABEL[key]
-                    picked[cursor] = label
+                    picked[cursor] = KEY2LABEL[key]
                     cursor += 1
                     if cursor >= len(boxes):
                         break

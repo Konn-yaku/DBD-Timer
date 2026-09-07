@@ -51,6 +51,7 @@ DEFAULTS = {
     },
     "detect": {
         "auto": True,          # 启动画面自动识别（需先校准 boxes）
+        "engine": "auto",     # 识别引擎: auto(有图标模型用icon)/icon/face
         "require_foreground": True,  # 仅当 DBD 窗口在前台才识别(被遮挡时抓到的不是游戏画面，会误报)
         "fps": 15.0,           # 识别采样帧率
         "confirm_frames": 3,   # 连续多少帧一致才确认状态切换（抑制闪烁）

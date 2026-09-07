@@ -17,7 +17,7 @@ import time
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from dbdtimer import capture, detector as detector_mod, gamewindow, hotkey, overlay
+from dbdtimer import capture, detector as detector_mod, gamewindow, hotkey, iconengine, overlay
 from dbdtimer.config import load as load_cfg
 from dbdtimer.timers import TimerBank
 
@@ -67,7 +67,19 @@ def run_normal(app, cfg):
     manual_label = _key_label(keys["manual_start"])
     locator = gamewindow.WindowLocator(cfg["game"]["window_title"])
     source = capture.FrameSource(locator)
-    det = detector_mod.Detector(cfg, on_unhook=lambda idx, ts: _on_unhook(idx, ts, ov))
+
+    # 引擎选择：icon=图标识别(需已训练模型) / face=旧整框比对 / auto=有图标模型用icon否则face
+    def _make_detector():
+        eng = str(cfg["detect"].get("engine", "auto")).lower()
+        icon = iconengine.IconEngine(cfg, on_unhook=lambda i, ts: _on_unhook(i, ts, ov))
+        if eng == "icon" or (eng == "auto" and icon.ready):
+            icon.is_icon = True
+            return icon
+        d = detector_mod.Detector(cfg, on_unhook=lambda i, ts: _on_unhook(i, ts, ov))
+        d.is_icon = False
+        return d
+
+    det = _make_detector()
 
     boxes = cfg["hud"]["boxes"]
     auto_on = bool(cfg["detect"].get("auto", True))
@@ -181,9 +193,12 @@ def run_normal(app, cfg):
     print(f"        锁定/解锁悬浮窗: 点悬浮窗🔒按钮 或 {'+'.join(keys['toggle_lock'])}")
     print(f"        退出: Ctrl+Alt+Q")
     if boxes:
-        print(f"        已加载 {len(boxes)} 个头像框，自动识别开启"
-              + (f"（hooked模板{len(det.pool_hooked)}张/downed模板{len(det.pool_downed)}张）"
-                 if det.has_templates else "（未拍模板：simple 模式，倒地拉起可能误报）"))
+        if getattr(det, "is_icon", False):
+            print(f"        已加载 {len(boxes)} 个头像框，自动识别开启（图标识别模式，已加载训练模型）")
+        else:
+            print(f"        已加载 {len(boxes)} 个头像框，自动识别开启"
+                  + (f"（hooked模板{len(det.pool_hooked)}张/downed模板{len(det.pool_downed)}张）"
+                     if det.has_templates else "（未拍模板：simple 模式，倒地拉起可能误报）"))
     else:
         print(f"        未校准头像框：自动识别关闭，仅手动 {manual_label} 可用")
     return app.exec()
