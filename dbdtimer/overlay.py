@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
-"""悬浮窗：透明置顶、可拖动、带锁按钮、4 行黄/白双阶段一位小数计时。
+"""悬浮窗：透明置顶、可拖动、4 行黄/白双阶段一位小数计时（纯显示，平时鼠标穿透）。
 
 与 4 名幸存者一一对应：
 - 自动识别模式：4 行计时器分别锚定到 4 个头像框的“左侧”（由校正框 boxes +
   游戏窗口矩形实时换算，行距 = 头像间距，无需手动逐行对齐）。
 - 手动兜底模式（无校正框/未找到游戏窗口时）：退化为自由纵向排布，可整体拖动。
 
-交互规则：
-- 解锁态：可拖动。锚定模式下拖动会把窗口相对头像列的偏移存入 dx/dy，
-  松开后仍贴着头像列左侧（行距始终由头像框决定）。
-- 锁定态(默认语义同旧版)：仅禁止拖动、位置固定。
-- 可选 passthrough_on_lock=True：锁定同时鼠标穿透(不挡游戏)，此时只能靠热键解锁。
+鼠标穿透 / 锁（由托盘图标 + 热键控制）：
+- 锁定态(默认)：整窗 WA_TransparentForInput 鼠标穿透，完全不挡游戏点击；
+  此时不显示任何按钮（点了也没用）。
+- 解锁态(拖动微调)：关闭穿透、可点击；窗口顶部显示一个“锁图标”，
+  点击即可重新锁定；也可用托盘/Ctrl+Alt+L。
+- 解锁后若配置 auto_relock_s>0，超时未操作会自动回到锁定(穿透)。
 - 数字一位小数正数到 60：0~10s 黄(下钩保护)，10~60s 白(果断反击)，到 60 释放。
 """
 import time
@@ -20,15 +21,18 @@ from PySide6.QtCore import Qt, QTimer, QPoint, QRect, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QGuiApplication
 from PySide6.QtWidgets import QWidget, QToolButton
 
-from .config import load as _load_cfg, save as _save_cfg
+from .config import save as _save_cfg
 from .timers import TimerBank
 
 # 数字右缘与头像左缘之间的留白(屏幕逻辑像素)
 _RIGHT_GAP = 8
-# 顶部控制条(键/锁按钮)高度与其下方到第 0 行的间距
+# 顶部留白(容纳解锁时的小锁图标)高度与其下方到第 0 行的间距
 _CTRL_H = 24
 _CTRL_GAP = 4
 _MAX_TEXT = "60.0"   # 一位小数最长 4 字符，用于固定行宽避免抖动
+# 半透明深色背景在最后一个头像下沿再往下多延伸的高度(逻辑像素)，
+# 让面板底缘与头像列下沿看齐、不“卡”在最后一个头像中间。
+_BOTTOM_PAD = 12
 # 字号随分辨率自适应：font_px 是“参考 1920 宽(1080p)”时的字号；
 # 2K/4K 下头像列与左侧空隙等比变大，字号按窗口宽度比例放大以保持一致观感。
 _REF_WIDTH = 1920.0
@@ -93,8 +97,8 @@ class DigitLabel(QWidget):
 
 
 class OverlayWindow(QWidget):
-    # 用户点了“键”按钮，请求应用打开按键重绑对话框
-    rebind_requested = Signal()
+    # 锁定状态变化(True=已锁定/鼠标穿透)。供 app 刷新托盘、自动回锁等。
+    lock_changed = Signal(bool)
 
     def __init__(self, cfg, bank: TimerBank, boxes=None, rect_provider=None, parent=None):
         super().__init__(parent)
@@ -103,7 +107,6 @@ class OverlayWindow(QWidget):
         self._boxes = list(boxes) if boxes else []
         self._rect_provider = rect_provider
         self._locked = bool(cfg["overlay"]["locked"])
-        self._passthrough_lock = bool(cfg["overlay"].get("passthrough_on_lock", False))
         self._drag_off: QPoint | None = None
         self._dragging = False
         self._last_anchor = None      # (winX, winY) 上次锚定位置，用于拖动归算偏移
@@ -132,24 +135,15 @@ class OverlayWindow(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
 
-        # ---- 顶部控制条：键 / 锁 按钮 ----
-        self._key_btn = QToolButton(self)
-        self._key_btn.setFixedSize(18, 18)
-        self._key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._key_btn.setStyleSheet(
-            "QToolButton{border:none;background:transparent;font-size:11px;color:white;}"
-        )
-        self._key_btn.setText("键")
-        self._key_btn.setToolTip("设置手动计时按键：点击后按一下你想要的键")
-        self._key_btn.clicked.connect(self.rebind_requested.emit)
-
+        # ---- 锁定按钮：仅“未锁定(可拖动/非穿透)”时显示，点击即锁定 ----
         self._lock_btn = QToolButton(self)
         self._lock_btn.setFixedSize(18, 18)
         self._lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._lock_btn.setStyleSheet(
-            "QToolButton{border:none;background:transparent;font-size:12px;color:white;}"
+            "QToolButton{border:none;background:rgba(10,10,12,130);"
+            "border-radius:9px;font-size:12px;color:white;}"
         )
-        self._lock_btn.setToolTip("锁定/解锁位置（点此或 Ctrl+Alt+L 解锁）")
+        self._lock_btn.setToolTip("点击锁定并开启鼠标穿透（也可用托盘图标 / Ctrl+Alt+L）")
         self._lock_btn.clicked.connect(self.toggle_lock)
 
         # ---- 4 行数字 ----
@@ -165,10 +159,11 @@ class OverlayWindow(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(50)
 
-        self._apply_lock()
+        # 先定几何再 show，避免未定尺寸时闪现
         self._place_initial()
         self._update_geometry()
-        self._update_lock_icon()
+        self._apply_lock()
+        self._refresh_lock_ui()
 
     # =========================================================
     # 几何：锚定到 4 个头像框左侧 / 或自由排布
@@ -252,7 +247,11 @@ class OverlayWindow(QWidget):
         y0 = centers[0]
         win_y = y0 - label_h / 2.0 - row_top_margin
         win_x = right_edge - label_w
+        # 高度需容纳：顶部控制条 + 第0行~最后一行数字。
         win_h = row_top_margin + (centers[-1] - y0) + label_h
+        # 背景下缘再往下延：至少对齐到最后一个头像的下沿(+余量)，避免“卡”在头像中间
+        last_avatar_bottom = t + self._boxes[-1][3] * H + self._dy
+        win_h = max(win_h, int(last_avatar_bottom - win_y) + _BOTTOM_PAD)
         win_w = max(label_w, _CTRL_H * 3 + 8)
         rects = []
         for i, cy in enumerate(centers):
@@ -273,7 +272,7 @@ class OverlayWindow(QWidget):
         self._last_anchor = (win_x, win_y)
 
     def _apply_free_layout(self):
-        """自由模式(无校正框/未找到游戏窗口)：顶部控制条 + 各行均匀下排。"""
+        """自由模式(无校正框/未找到游戏窗口)：顶部留白(解锁时的小锁) + 各行均匀下排。"""
         if self._free_laid_out:
             return
         self._free_laid_out = True
@@ -290,9 +289,8 @@ class OverlayWindow(QWidget):
         self.setFixedSize(win_w, win_h)
         self.setFixedHeight(win_h)
 
-    def _layout_controls(self, win_w):
-        self._key_btn.setGeometry(QRect(4, 3, 18, 18))
-        self._lock_btn.setGeometry(QRect(24, 3, 18, 18))
+    def _layout_lock_btn(self, win_w):
+        self._lock_btn.setGeometry(QRect(4, 3, 18, 18))
 
     def _update_geometry(self):
         if self._dragging:
@@ -302,12 +300,12 @@ class OverlayWindow(QWidget):
             if geo is not None:
                 self._free_laid_out = False
                 self._apply_anchor(geo)
-                self._layout_controls(geo[2])
+                self._layout_lock_btn(geo[2])
                 return
         # 自由模式
         self._last_anchor = None
         self._apply_free_layout()
-        self._layout_controls(self.width())
+        self._layout_lock_btn(self.width())
 
     # ---------- 位置 / 拖动 ----------
     def _save_pos(self):
@@ -345,24 +343,40 @@ class OverlayWindow(QWidget):
             self._update_geometry()
         super().mouseReleaseEvent(event)
 
-    # ---------- 锁定 ----------
-    def _update_lock_icon(self):
+    # ---------- 锁定 / 鼠标穿透 ----------
+    @property
+    def is_locked(self):
+        return self._locked
+
+    @property
+    def is_dragging(self):
+        return self._dragging
+
+    def _refresh_lock_ui(self):
+        """未锁定(可拖动/非穿透)时显示锁图标；已锁定(穿透)时隐藏(点了也没用)。"""
         self._lock_btn.setText("\U0001F512" if self._locked else "\U0001F513")
+        self._lock_btn.setVisible(not self._locked)
 
     def set_locked(self, locked):
-        self._locked = bool(locked)
+        locked = bool(locked)
+        if locked == self._locked:
+            self._refresh_lock_ui()
+            return
+        self._locked = locked
         self._cfg["overlay"]["locked"] = self._locked
         self._apply_lock()
-        self._update_lock_icon()
+        self._refresh_lock_ui()
         self._save_pos()
+        self.lock_changed.emit(self._locked)
 
     def toggle_lock(self):
         self.set_locked(not self._locked)
 
     def _apply_lock(self):
-        if self._passthrough_lock:
-            self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, self._locked)
-            self.show()
+        # 设计：锁定 = 整窗鼠标穿透(完全不挡游戏)；解锁 = 可点击/拖动微调。
+        # setWindowFlag 会自动隐藏窗口，需再 show() 使其可见。
+        self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, self._locked)
+        self.show()
 
     # ---------- 计时入口 / 刷新 ----------
     def manual_start(self):

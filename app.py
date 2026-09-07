@@ -10,12 +10,14 @@
 运行前提：在虚拟环境里运行，例如  .venv\\Scripts\\python.exe app.py
 """
 import argparse
+import math
 import os
 import sys
 import time
 
-from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from dbdtimer import capture, detector as detector_mod, gamewindow, hotkey, iconengine, overlay
 from dbdtimer.config import load as load_cfg
@@ -36,10 +38,39 @@ def _key_label(name):
     return _KEY_LABEL.get(name, name)
 
 
+def _make_tray_icon():
+    """运行时画一个简单的“时钟/计时”托盘图标，无需额外图片资源。"""
+    s = 64
+    pm = QPixmap(s, s)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(38, 42, 58))          # 深色圆底
+    p.drawEllipse(1, 1, s - 2, s - 2)
+    p.setPen(QPen(QColor(255, 214, 0), max(2, s // 16)))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawEllipse(int(s * 0.16), int(s * 0.16), int(s * 0.68), int(s * 0.68))
+
+    def _hand(deg, length, width, color):
+        a = math.radians(deg - 90.0)
+        x2 = s / 2 + math.cos(a) * length
+        y2 = s / 2 + math.sin(a) * length
+        p.setPen(QPen(QColor(*color), max(2, width)))
+        p.drawLine(s // 2, s // 2, int(x2), int(y2))
+
+    _hand(0, s * 0.20, s // 12, (255, 255, 255))    # 分针→12
+    _hand(60, s * 0.14, s // 14, (255, 214, 0))     # 时针偏→2 表示计时中
+    p.end()
+    return QIcon(pm)
+
+
 def run_demo(app, cfg):
     """演示模式：无需游戏，定时触发 4 行计时器，便于查看悬浮窗效果。"""
     bank = TimerBank()
-    ov = overlay.OverlayWindow(cfg, bank)   # 无校正框 => 自由排布(顶部控制条+4行)
+    # 演示以“解锁态”展示，方便看到锁图标/可拖动
+    cfg["overlay"]["locked"] = False
+    ov = overlay.OverlayWindow(cfg, bank)   # 无校正框 => 自由排布(顶部小锁+4行)
     ov.show()
     state = {"n": 0}
 
@@ -111,8 +142,8 @@ def run_normal(app, cfg):
         print(f"[{_now()}] 手动触发 {cur} → 分配={label}")
 
     def _on_lock():
+        # 直接切换；由 lock_changed 信号统一刷新托盘/自动回锁/日志
         ov.toggle_lock()
-        print(f"[{_now()}] 悬浮窗 锁定={ov._locked}")
 
     def _on_quit():
         print(f"[{_now()}] 退出")
@@ -148,9 +179,79 @@ def run_normal(app, cfg):
         if accepted:
             print(f"[{_now()}] 手动计时键已改为: {_key_label(dlg.key_name)}")
 
-    ov.rebind_requested.connect(_on_rebind)
     _configure_watcher()
     watcher.start()
+
+    # ---------- 托盘图标 + 锁定(鼠标穿透)管理 ----------
+    _auto_relock_s = max(0, int(float(cfg["overlay"].get("auto_relock_s", 20))))
+    _relock_timer = QTimer()
+    _relock_timer.setSingleShot(True)
+    _tray = None
+    _tray_lock_act = None
+    _tray_auto_act = None
+
+    def _arm_relock():
+        _relock_timer.stop()
+        if not ov.is_locked and _auto_relock_s > 0:
+            _relock_timer.start(int(_auto_relock_s * 1000))
+
+    def _relock_timeout():
+        if ov.is_dragging:      # 还在拖动中则顺延
+            _arm_relock()
+            return
+        ov.set_locked(True)
+
+    _relock_timer.timeout.connect(_relock_timeout)
+
+    def _set_auto_relock(checked):
+        nonlocal _auto_relock_s
+        _auto_relock_s = 20 if checked else 0
+        cfg["overlay"]["auto_relock_s"] = _auto_relock_s
+        try:
+            from dbdtimer.config import save as _sc
+            _sc(cfg)
+        except Exception:
+            pass
+        _arm_relock()
+
+    def _refresh_tray(locked):
+        if _tray_lock_act is not None:
+            _tray_lock_act.setChecked(locked)
+        if _tray is not None:
+            _tray.setToolTip("DBD 下钩计时助手 - "
+                             + ("已锁定·鼠标穿透" if locked else "已解锁·可拖动微调"))
+
+    def _on_lock_state(locked):
+        print(f"[{_now()}] 悬浮窗 {'锁定(鼠标穿透)' if locked else '解锁(可拖动微调)'}")
+        _refresh_tray(locked)
+        _arm_relock()
+
+    if QSystemTrayIcon.isSystemTrayAvailable():
+        menu = QMenu()
+        _tray_lock_act = menu.addAction("锁定悬浮窗（鼠标穿透）")
+        _tray_lock_act.setCheckable(True)
+        _tray_lock_act.setChecked(ov.is_locked)
+        _tray_lock_act.triggered.connect(ov.set_locked)   # triggered(bool) -> set_locked
+        menu.addSeparator()
+        _tray_auto_act = menu.addAction("解锁后自动回锁（20 秒）")
+        _tray_auto_act.setCheckable(True)
+        _tray_auto_act.setChecked(_auto_relock_s > 0)
+        _tray_auto_act.triggered.connect(_set_auto_relock)
+        menu.addSeparator()
+        menu.addAction("改手动计时键…").triggered.connect(_on_rebind)
+        menu.addSeparator()
+        _i1 = menu.addAction(f"锁定/解锁: {'+'.join(keys['toggle_lock'])}")
+        _i1.setEnabled(False)
+        _i2 = menu.addAction("退出: Ctrl+Alt+Q")
+        _i2.setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("退出").triggered.connect(_on_quit)
+        _tray = QSystemTrayIcon(_make_tray_icon())
+        _tray.setContextMenu(menu)
+        _tray.show()
+    else:
+        print(f"[{_now()}] 提示: 系统托盘不可用；请用热键锁定/解锁/退出")
+    ov.lock_changed.connect(_on_lock_state)
 
     # 自动识别主循环
     interval = max(40, int(1000.0 / max(1.0, float(cfg["detect"].get("fps", 15.0)))))
@@ -202,9 +303,11 @@ def run_normal(app, cfg):
 
     print(f"[{_now()}] DBD 下钩计时助手已启动")
     print(f"        自动识别: 4 个计时器与 4 名逃生者一一对应（槽0~3→计时器1~4）")
-    print(f"        手动计时: 按 {manual_label} 启动一个空闲计时器（可点『键』按钮随时改）")
-    print(f"        锁定/解锁悬浮窗: 点悬浮窗🔒按钮 或 {'+'.join(keys['toggle_lock'])}")
-    print(f"        退出: Ctrl+Alt+Q")
+    print(f"        手动计时: 按 {manual_label} 启动一个空闲计时器（可改：托盘图标右键→改手动计时键）")
+    print(f"        悬浮窗平时为鼠标穿透; 控制: 右下角托盘图标右键 或 快捷键:")
+    print(f"          {', '.join(['+'.join(keys['toggle_lock']), 'Ctrl+Alt+Q'])}"
+          f"（锁定/解锁 · 退出）")
+    print(f"        解锁后悬浮窗顶部会出现锁图标，点击即重新锁定(穿透)")
     if boxes:
         if getattr(det, "is_icon", False):
             print(f"        已加载 {len(boxes)} 个头像框，自动识别开启（图标识别模式，已加载训练模型）")

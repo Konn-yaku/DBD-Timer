@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """全局热键（基于 GetAsyncKeyState 轮询，无需管理员权限）。
 
-供两类用途：
-1. manual_start：手动兜底“下钩计时”（默认鼠标下侧键 XBUTTON1）。
-2. toggle_lock：悬浮窗锁定/解锁（默认 Ctrl+Alt+L，也可直接点悬浮窗锁按钮）。
-   仅当用户开启 passthrough_on_lock（锁定=鼠标穿透）时，才必须靠此热键解锁，
-   因此按全局热键实现，保证任何情况下都可用。
+供三类用途：
+1. manual_start：手动兜底“下钩计时”（默认鼠标侧键 XBUTTON1/2）。
+2. toggle_lock：悬浮窗 锁定/解锁（默认 Ctrl+Alt+L）。
+   由于“锁定 = 鼠标穿透”，穿透后悬浮窗本身点不到，因此用全局热键保证随时可解锁，
+   配合托盘图标右键一起作为解锁手段。
+3. Ctrl+Alt+Q：退出。
 """
 import ctypes
 
