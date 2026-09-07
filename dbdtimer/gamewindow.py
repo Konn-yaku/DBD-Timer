@@ -18,6 +18,9 @@ user32.EnumWindows.restype = wintypes.BOOL
 user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.IsIconic.argtypes = [wintypes.HWND]
+user32.IsIconic.restype = wintypes.BOOL
 
 # DWMWA_EXTENDED_FRAME_BOUNDS
 _DWMWA_EXTENDED_FRAME_BOUNDS = 9
@@ -121,3 +124,18 @@ class WindowLocator:
     @property
     def found(self):
         return self._hwnd is not None
+
+    def foreground(self):
+        """DBD 窗口是否当前在前台且未最小化。
+
+        窗口被遮挡/最小化时，抓屏抓到的是遮挡物而不是游戏画面，
+        识别结果不可信，调用方应据此暂停识别。
+        """
+        if self._hwnd is None:
+            return False
+        try:
+            if user32.IsIconic(self._hwnd):
+                return False
+            return bool(user32.GetForegroundWindow() == self._hwnd)
+        except Exception:
+            return False

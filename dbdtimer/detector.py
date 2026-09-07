@@ -108,6 +108,9 @@ class Detector:
         self.confirm = max(1, int(d.get("confirm_frames", 3)))
         self.athr = float(d.get("alive_threshold", 0.85))
         self.sthr = float(d.get("state_threshold", 0.60))
+        # 进入“事件态”(上钩/倒地/未知偏离)所需的最短持续偏离秒数：
+        # 秒级动画/高亮/抖动(不足该时长就恢复)不会进入事件态，从而不误触发。
+        self.evt_s = max(0.0, float(d.get("min_event_s", 2.5)))
         self.simple = bool(d.get("simple_mode", True))
         self.debug_on = bool(d.get("debug_frames", False))
         self.pool_hooked = _load_pool(TPL_HOOKED_DIFF)   # 差异图模板
@@ -120,6 +123,16 @@ class Detector:
     def has_templates(self):
         return bool(self.pool_hooked or self.pool_downed)
 
+    def reset(self):
+        """清空全部槽位状态与基线（切回前台后调用，重新学习当前画面）。"""
+        for sl in self.slots:
+            sl.alive = None
+            sl.raw = None
+            sl.hold = 0
+            sl.committed = None
+            sl.last_alive = 0.0
+            sl.last_sim = 0.0
+
     # ---- 每帧入口 ----
     def process(self, frame, boxes, now=None):
         """frame: BGR 游戏窗口画面；boxes: 归一化框列表。返回事件 [(idx, now)]。"""
@@ -131,6 +144,7 @@ class Detector:
             crop = _crop_gray(frame, box, W, H)
             if crop is None:
                 continue
+            before = sl.committed
             raw = self._classify(sl, crop, now)
             if self._advance(sl, raw, now):
                 events.append((sl.idx, now))
@@ -138,6 +152,10 @@ class Detector:
                     self.on_unhook(sl.idx, now)
                 except Exception:
                     pass
+            elif self.debug_on and sl.committed != before:
+                # 状态切换/自愈重设日志：便于定位“为什么没触发”
+                print(f"[det] t={now:11.0f} 槽{sl.idx}: {before}→{sl.committed} "
+                      f"sim={sl.last_sim:.2f}")
         if self.debug_on and now >= self._next_debug:
             self._next_debug = now + 4.0
             self._save_debug(frame, boxes)
@@ -199,19 +217,28 @@ class Detector:
                 sl.last_alive = now
             return False
 
+        if raw != ALIVE:
+            # 想进入某“事件态”(上钩/倒地/未知偏离)。真实状态(上钩/倒地)会持续很久；
+            # 若只是秒级噪声(头像动画/追逐高亮/画面抖动)且偏离不足 min_event_s，
+            # 就不进入事件态(保持 committed=ALIVE)，从而不会在它恢复时被误判成下钩。
+            if prev == ALIVE and now - sl.last_alive < self.evt_s:
+                return False
+            sl.committed = raw          # 进入/切换事件态（不触发）
+            return False
+
+        # raw == ALIVE 且 prev != ALIVE：从事件态恢复 —— 一次“下钩”候选
         fired = False
         if self.has_templates:
-            # 有差异模板：“倒地豁免”模型——被识别为“倒地”后恢复(拉起/自起)不触发；
-            # 其余偏离（上钩、或模板没认出的未知偏离）恢复都当作下钩，避免漏报。
-            if prev != DOWNED and raw == ALIVE:
+            # “倒地豁免”：明确被识别为“倒地”后恢复(倒地拉起/自起)不算下钩；
+            # 其余偏离(上钩、或模板没认出的未知偏离)恢复都当作下钩，避免漏报。
+            if prev != DOWNED:
                 fired = True
         else:
-            # 无模板：simple_mode 兜底（任何 偏离→恢复 都当作下钩）
-            if self.simple and prev in (HOOKED, CHANGED) and raw == ALIVE:
+            # 无模板：simple 兜底（任何 偏离→恢复 都当作下钩）
+            if self.simple and prev in (HOOKED, CHANGED):
                 fired = True
-        sl.committed = raw
-        if raw == ALIVE:
-            sl.last_alive = now
+        sl.committed = ALIVE
+        sl.last_alive = now
         return fired
 
     # ---- 调试截图 ----

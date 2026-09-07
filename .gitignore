@@ -9,3 +9,4 @@ __pycache__/
 debug/
 config.json
 templates/
+samples/

@@ -51,9 +51,11 @@ DEFAULTS = {
     },
     "detect": {
         "auto": True,          # 启动画面自动识别（需先校准 boxes）
+        "require_foreground": True,  # 仅当 DBD 窗口在前台才识别(被遮挡时抓到的不是游戏画面，会误报)
         "fps": 15.0,           # 识别采样帧率
         "confirm_frames": 3,   # 连续多少帧一致才确认状态切换（抑制闪烁）
         "alive_threshold": 0.85,  # 与“存活参考”整图相关性高于此 => 视为正常(降低以便捕捉小图标变化)
+        "min_event_s": 2.5,   # 进入“上钩/倒地/偏离”态所需最短持续秒数：滤掉秒级动画/高亮抖动造成的误触发
         "state_threshold": 0.50,  # 差异图与 hooked/downed 模板相关性需高于此才认定匹配
         "simple_mode": True,   # 无差异模板时：任何 偏离→恢复 都当作“下钩”（倒地拉起会误报）
         "debug_frames": False, # 周期性把识别画面存到 debug/ 便于排查

@@ -71,9 +71,11 @@ def run_normal(app, cfg):
 
     boxes = cfg["hud"]["boxes"]
     auto_on = bool(cfg["detect"].get("auto", True))
+    require_fg = bool(cfg["detect"].get("require_foreground", True))
     _hinted_no_boxes = not boxes
     _hinted_no_window = False
     _reported_found = False
+    _was_fg = None   # None=尚未评估前台；False=在后台；True=在前台
 
     def _on_unhook(idx, ts, ov_ref):
         ok = ov_ref.slot_start()
@@ -132,7 +134,7 @@ def run_normal(app, cfg):
     auto_timer.setInterval(interval)
 
     def _auto_tick():
-        nonlocal _hinted_no_boxes, _hinted_no_window, _reported_found
+        nonlocal _hinted_no_boxes, _hinted_no_window, _reported_found, _was_fg
         if not auto_on:
             return
         if not boxes:
@@ -149,6 +151,18 @@ def run_normal(app, cfg):
                 _hinted_no_window = True
                 print(f"[{_now()}] 未找到 DBD 窗口，自动识别等待中……（仅手动 {manual_label} 可用）")
             return
+        # 前台守卫：窗口被遮挡/最小化时，抓屏抓到的是遮挡物而非游戏画面，
+        # 会疯狂误触发，故暂停识别；切回游戏窗口后自动恢复并重建基线。
+        if require_fg and not locator.foreground():
+            if _was_fg is not False:
+                _was_fg = False
+                print(f"[{_now()}] DBD 不在前台（被遮挡/最小化），已暂停自动识别。"
+                      f"切回游戏窗口会自动恢复（避免把聊天/桌面误判成下钩）")
+            return
+        if _was_fg is False:
+            det.reset()   # 离开前台期间画面可能已大变(可能已有人上钩/倒地)，重建基线
+            print(f"[{_now()}] 回到 DBD 前台，重建识别基线")
+        _was_fg = True
         if not _reported_found:
             _reported_found = True
             print(f"[{_now()}] 已找到 DBD 窗口，画面自动识别开始")

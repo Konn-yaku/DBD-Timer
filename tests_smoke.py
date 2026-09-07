@@ -238,19 +238,22 @@ def test_detector_synthetic():
         alive = cv2_merge(grad)
         changed = cv2_merge(255 - grad)   # 反相 => 与 alive 参考强负相关
 
-        # ---- A. 无模板 => simple 模式：任何 偏离→恢复 都算下钩 ----
+        # ---- A. 无模板 => simple：长偏离→恢复触发；短抖动不触发 ----
         events = []
         det = make_det(events)
         t = time.monotonic()
         for _ in range(2):
             det.process(alive, boxes, t)
         check("A 初始化为 ALIVE(无事件)", len(events) == 0)
-        det.process(changed, boxes, t + 1)
-        check("A 偏离后仍未触发(还需恢复)", len(events) == 0)
-        det.process(alive, boxes, t + 2)
-        check("A 恢复=>触发下钩1个", len(events) == 1, f"events={events}")
+        det.process(changed, boxes, t + 1)   # 短偏离(<min_event_s=2.5s)
+        check("A 短偏离不进入事件态", det.slots[0].committed == "alive")
+        check("A 短偏离不触发", len(events) == 0, f"events={events}")
+        det.process(changed, boxes, t + 4)   # 偏离累计>=2.5s → 进入事件态
+        check("A 长偏离进入事件态", det.slots[0].committed == "changed")
+        det.process(alive, boxes, t + 5)     # 恢复 → 触发下钩
+        check("A 长偏离后恢复=>触发1个", len(events) == 1, f"events={events}")
         for i in range(4):
-            det.process(changed, boxes, t + 3 + i)
+            det.process(changed, boxes, t + 6 + i)
         check("A 持续偏离不重复触发", len(events) == 1, f"events={events}")
 
         # ---- B. 有差异模板：状态机语义（直接驱动 _advance 做单元验证）----
@@ -263,18 +266,81 @@ def test_detector_synthetic():
         det = make_det(events)          # 现在 has_templates=True
         sl = det.slots[0]
         t = time.monotonic()
-        det._advance(sl, "hooked", t)
-        fired = det._advance(sl, "alive", t + 1)
+        det._advance(sl, "hooked", t)              # prev=None → 进入事件态
+        fired = det._advance(sl, "alive", t + 1)   # 上钩→恢复 → 触发
         check("B 上钩→恢复 触发", fired is True)
-        det._advance(sl, "downed", t + 2)
-        fired = det._advance(sl, "alive", t + 3)
+        det._advance(sl, "downed", t + 2)          # 短倒地(<2.5s)不进入
+        det._advance(sl, "downed", t + 4)          # last_alive=t+1, 3s>=2.5 → 进入倒地
+        check("B 进入倒地态", sl.committed == "downed")
+        fired = det._advance(sl, "alive", t + 4.1)  # 倒地恢复(拉起/自起) → 不触发
         check("B 倒地→恢复 不触发(拉起/自起)", fired is not True)
-        det._advance(sl, "changed", t + 4)
-        fired = det._advance(sl, "alive", t + 5)
+        det._advance(sl, "changed", t + 4.2)       # 短偏离不进入
+        det._advance(sl, "changed", t + 7.0)       # last_alive=t+4.1, 2.9s>=2.5 → 进入
+        fired = det._advance(sl, "alive", t + 7.1)  # 未知偏离恢复 → 触发(防漏报)
         check("B 未知偏离→恢复 触发(防漏报)", fired is True)
+
+        # ---- C. 秒级抖动：短偏离(<min_event_s)后恢复，绝不触发 ----
+        det.reset()
+        sl = det.slots[0]
+        sl.committed = "alive"; sl.raw = "alive"; sl.last_alive = t + 20
+        fired = det._advance(sl, "changed", t + 20.2)
+        check("C 短偏离不进入事件态", fired is False and sl.committed == "alive")
+        fired = det._advance(sl, "alive", t + 20.4)
+        check("C 抖动恢复不触发", fired is False)
     finally:
         D.TEMPLATES_DIR = orig_tpl
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_icon_hook_state():
+    """图标状态机：only 钩上→离开(非献祭) 触发；献祭/死亡屏蔽；防抖。"""
+    print("== 图标状态机(下钩检测) ==")
+    from dbdtimer.iconstate import IconHookDetector
+
+    def mk():
+        ev = []
+        det = IconHookDetector(on_unhook=lambda i, ts: ev.append((i, ts)),
+                               n=4, confirm=2, post_window_s=0.5, dead_idle_s=1.0)
+        return det, ev
+
+    def feed(det, cats, dt=0.3):
+        t = 0.0
+        for c in cats:
+            others = ["other"] * 4
+            others[0] = c
+            det.process(others, t)
+            t += dt
+
+    # 防抖：单帧 hooked 抖动不进入/不触发
+    det, ev = mk()
+    feed(det, ["other", "other", "hooked", "other", "other", "other"])
+    check("图标 单帧hooked抖动不触发", len(ev) == 0, f"ev={ev}")
+
+    # 下钩：hooked 持续(>=confirm) → 离开且非献祭 → 触发
+    det, ev = mk()
+    feed(det, ["other", "other", "hooked", "hooked",
+               "other", "other", "other", "other"])
+    check("图标 上钩→恢复 触发下钩", len(ev) == 1, f"ev={ev}")
+
+    # 献祭：hooked→sacrificed 不触发，死后屏蔽
+    det, ev = mk()
+    feed(det, ["other", "other", "hooked", "hooked",
+               "sacrificed", "sacrificed", "other", "other", "other"])
+    check("图标 献祭不触发", len(ev) == 0, f"ev={ev}")
+
+    # 死亡屏蔽解除(视为新局)后可再次触发（单条连续时间序列）
+    det, ev = mk()
+    feed(det, (["other", "other", "hooked", "hooked", "sacrificed", "sacrificed"]
+               + ["other"] * 6            # 超过 dead_idle_s(1.0s) → 释放屏蔽
+               + ["hooked", "hooked"]     # 新一局再次上钩
+               + ["other"] * 4))          # 真正下钩 → 触发
+    check("图标 献祭屏蔽解除后可再触发", len(ev) == 1, f"ev={ev}")
+
+    # 离开钩上不足窗口又回钩(仍挂着)：不触发；真正下钩才触发 1 次
+    det, ev = mk()
+    feed(det, ["other", "other", "hooked", "hooked", "other",
+               "hooked", "hooked", "other", "other", "other", "other", "other"])
+    check("图标 离开又回钩不触发，真正下钩触发", len(ev) == 1, f"ev={ev}")
 
 
 def test_overlay_render_pixels():
@@ -340,6 +406,7 @@ def main():
     test_overlay_offscreen()
     test_overlay_render_pixels()
     test_detector_synthetic()
+    test_icon_hook_state()
     print(f"\n全部通过: {len(PASS)} 项")
 
 
