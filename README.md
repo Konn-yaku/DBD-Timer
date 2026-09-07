@@ -97,27 +97,6 @@ py -3.11 -m venv .venv
 > 说明：**正常使用不会往磁盘写任何截图**，也不会创建 `debug\` 目录；只有显式调试
 > （`--debug`，或把 `config.json` 的 `detect.debug_frames` 设为 `true`）才惰性创建并写识别帧。
 
-## 打包成 exe（给用户分发）
-
-开发完成后可打成**单文件 exe（无控制台窗口）**直接分发给用户：
-
-1. 双击 `打包成exe.bat`（自动完成：安装 PyInstaller → 跑 `tests_smoke.py` → 构建）。
-   产物：`dist\DBD下钩计时助手.exe`，另会复制一份 `dist\使用说明.txt`；整包压缩分发即可。
-2. 打包后的行为与源码运行一致，另有几点：
-   - **配置/模型在 exe 旁**：`config.json`、`templates\`、`运行日志.log` 都生成在 exe 同目录。
-     故 exe 需放在**可写**文件夹（如桌面某子目录），别放 `C:\Program Files` 等保护目录。
-   - **图标模型已内置**：`templates/icon_model.npz` 打进 exe，首次启动自动解出到 exe 旁并加载，
-     无需另外给用户发模型文件。
-   - **不自动截屏**：发布版不预先创建 `debug\`，正常使用不落任何截图；仅显式调试才写。
-   - **无控制台也能校准/改键**：托盘右键现提供 **校准头像框…** 与 **快捷键设置…**，
-     （发布版无黑色控制台窗口，`print` 会写入 exe 旁的 `运行日志.log` 供排障）。
-3. 排障发布版问题：请用户把 exe 旁的 `运行日志.log` 发回；确需抓识别帧时，在其 `config.json`
-   中把 `detect.debug_frames` 改为 `true` 重启（写 `debug\`），排查完改回 `false`。
-4. 重新打包：再次运行 `打包成exe.bat` 即可（会覆盖 `dist\`）。
-
-> 若杀软 / Windows SmartScreen 对打包 exe 报警，属 PyInstaller 单文件的常见误报，
-> 需用户「添加信任」后自行判断是否使用。
-
 ## 数据采集与训练（想用新对局画面重训模型时）
 
 图标识别是当前**唯一**检测方案：直接识别固定状态图标（钩上/献祭），不依赖角色脸。
@@ -141,9 +120,6 @@ config.json             运行时生成的配置（框、热键、显示设置�
 templates/              图标模型 icon_model.npz（训练产物）
 samples/                训练数据收集/回放目录
 debug/                  调试帧（仅显式调试模式才生成）
-dbdtimer.spec           PyInstaller 打包配置（单文件 exe、无控制台）
-打包成exe.bat           一键打包脚本（装 PyInstaller→测试→构建）
-发布说明.txt            随 exe 分发的用户说明（构建时复制为 使用说明.txt）
 dbdtimer/
   config.py             配置读写
   timers.py             4 槽 60s 计时内核（槽=幸存者一一对应）
