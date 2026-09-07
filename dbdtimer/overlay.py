@@ -14,9 +14,6 @@
 - 解锁后若配置 auto_relock_s>0，超时未操作会自动回到锁定(穿透)。
 - 数字一位小数正数到 60：0~10s 黄(下钩保护)，10~60s 白(果断反击)，到 60 释放。
 """
-import time
-import winsound
-
 from PySide6.QtCore import Qt, QTimer, QPoint, QRect, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QGuiApplication
 from PySide6.QtWidgets import QWidget, QToolButton
@@ -110,8 +107,6 @@ class OverlayWindow(QWidget):
         self._drag_off: QPoint | None = None
         self._dragging = False
         self._last_anchor = None      # (winX, winY) 上次锚定位置，用于拖动归算偏移
-        self._beep = bool(cfg["overlay"]["beep"])
-        self._beep_p = []             # 每行是否已提示过“保护期结束”
         self._free_laid_out = False   # 自由模式只排一次版
 
         o = cfg["overlay"]
@@ -152,7 +147,6 @@ class OverlayWindow(QWidget):
             lab = DigitLabel(self._font_px, self)
             lab.set_value("")
             self._labels.append(lab)
-        self._beep_p = [False] * self._rows
         self._font_applied = self._font_px   # 当前实际应用的字号
         # 刷新循环
         self._timer = QTimer(self)
@@ -323,7 +317,6 @@ class OverlayWindow(QWidget):
             lab.show()
         for i, lab in enumerate(self._labels):
             lab.setVisible(i < self._rows)
-        self._beep_p = [False] * self._rows
         self._font_applied = 0        # 下次几何计算强制按新行宽重设字号
         self._free_laid_out = False   # 允许重新自由排版
         self._update_geometry()
@@ -405,7 +398,6 @@ class OverlayWindow(QWidget):
         """手动兜底：启动第一个空闲槽(不知道对应哪位逃生者)。返回启动槽号或 None。"""
         idx = self._bank.manual_trigger()
         if idx is not None and idx < len(self._labels):
-            self._beep_p[idx] = False
             self._labels[idx].set_value("0.0")
             self.raise_()
         return idx
@@ -415,7 +407,6 @@ class OverlayWindow(QWidget):
         返回启动的槽号或 None。"""
         got = self._bank.start_slot(idx)
         if got is not None and idx < len(self._labels):
-            self._beep_p[idx] = False
             self._labels[idx].set_value("0.0")
             self.raise_()
         return got
@@ -434,37 +425,14 @@ class OverlayWindow(QWidget):
                 lab.set_value("")
                 continue
             if r["finished"]:
-                if self._beep:
-                    self._beep_finish()
                 lab.set_value("")
                 continue
             lab.set_value(self._fmt(r["elapsed"]))
             lab.set_color(self._c_prot if r["protection"] else self._c_ds)
-            if not r["protection"] and not self._beep_p[i]:
-                self._beep_p[i] = True
-                if self._beep:
-                    self._beep_phase()
         # 保底：无活动槽时也刷新空标签
         for i, lab in enumerate(self._labels):
             if i not in active:
                 lab.set_value("")
-
-    # ---------- 提示音 ----------
-    @staticmethod
-    def _beep_phase():
-        try:
-            winsound.Beep(880, 90)
-        except Exception:
-            pass
-
-    @staticmethod
-    def _beep_finish():
-        try:
-            winsound.Beep(1100, 110)
-            time.sleep(0.05)
-            winsound.Beep(1100, 110)
-        except Exception:
-            pass
 
     # ---------- 背景 ----------
     def paintEvent(self, event):

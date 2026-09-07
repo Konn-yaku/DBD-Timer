@@ -78,7 +78,6 @@ DEFAULTS = {
         "dy": 0.0,
         "color_protection": "#FFD600",   # 下钩保护期(0~10s) 黄色
         "color_ds": "#FFFFFF",           # 果断反击期(10~60s) 白色
-        "beep": True,                    # 到期/阶段切换提示音
     },
     "detect": {
         "auto": True,          # 启动画面自动识别（需先校准 boxes 且有训练模型）

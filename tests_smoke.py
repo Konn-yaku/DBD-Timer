@@ -183,7 +183,7 @@ def test_overlay_offscreen():
     if existed:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             orig_cfg = f.read()
-    cfg["overlay"].update({"beep": False, "locked": False,
+    cfg["overlay"].update({"locked": False,
                            "x": -1.0, "y": -1.0, "font_px": 24,
                            "color_protection": "#FFD600", "color_ds": "#FFFFFF"})
     bank = TimerBank()
@@ -299,7 +299,7 @@ def test_overlay_render_pixels():
 
     app = QApplication.instance() or QApplication(sys.argv)
     cfg = load_cfg()
-    cfg["overlay"].update({"beep": False, "locked": False,
+    cfg["overlay"].update({"locked": False,
                            "x": -1.0, "y": -1.0, "font_px": 24,
                            "color_protection": "#FFD600", "color_ds": "#FFFFFF"})
     bank = TimerBank()
