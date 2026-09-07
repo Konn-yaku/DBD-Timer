@@ -8,7 +8,8 @@
     diff = |当前裁剪 - 该槽正常参考|
   差异图会把“静止的脸 + 静止的背景”减掉，只留下变化的图标区，
   因此可跨角色、跨地图背景复用同一种图标模板（记为上钩/记为倒地 拍的差异）。
-- 触发仍用“恢复边沿”：committed 从 HOOKED 回到 ALIVE = 被救下 => 下钩事件。
+- 触发仍用“恢复边沿”：任何偏离态回到 ALIVE 都视为一次“下钩”事件；
+  唯一例外是被识别为“倒地”后恢复（倒地拉起/自起）不触发。
 - 连续 confirm_frames 帧一致才切换状态，抑制闪烁。
 """
 import glob
@@ -83,7 +84,7 @@ def _crop_gray(frame, box, W, H):
 
 
 class _Slot:
-    __slots__ = ("idx", "alive", "raw", "hold", "committed", "last_alive")
+    __slots__ = ("idx", "alive", "raw", "hold", "committed", "last_alive", "last_sim")
 
     def __init__(self, idx):
         self.idx = idx
@@ -92,6 +93,11 @@ class _Slot:
         self.hold = 0           # 连续帧计数
         self.committed = None   # 确认后的稳定状态
         self.last_alive = 0.0
+        self.last_sim = 0.0     # 最近一帧与 alive 参考的相关度(用于调试)
+
+    @property
+    def debug_tag(self):
+        return f"{self.committed} {self.last_sim:.2f}"
 
 
 class Detector:
@@ -100,7 +106,7 @@ class Detector:
         self.on_unhook = on_unhook   # callable(idx:int, now:float)
         d = cfg["detect"]
         self.confirm = max(1, int(d.get("confirm_frames", 3)))
-        self.athr = float(d.get("alive_threshold", 0.90))
+        self.athr = float(d.get("alive_threshold", 0.85))
         self.sthr = float(d.get("state_threshold", 0.60))
         self.simple = bool(d.get("simple_mode", True))
         self.debug_on = bool(d.get("debug_frames", False))
@@ -145,6 +151,7 @@ class Detector:
             sl.last_alive = now
             return ALIVE
         sim = _corr(crop, sl.alive)
+        sl.last_sim = sim
         if sim >= self.athr:
             sl.alive = 0.92 * sl.alive + 0.08 * crop   # 缓慢更新存活参考
             return ALIVE
@@ -158,6 +165,14 @@ class Detector:
                 return HOOKED
             if sd >= self.sthr and sd > sh:
                 return DOWNED
+            # 未知偏离且长期没恢复正常：基线可能过期(如启动时对方已上钩/画面不在对局)，
+            # 重设为当前画面自愈（与下方无模板分支行为一致），避免永久锁死在 CHANGED。
+            if now - sl.last_alive > _REBASELINE_S:
+                sl.alive = crop.copy()
+                sl.last_alive = now
+                sl.raw = ALIVE
+                sl.committed = ALIVE
+                return ALIVE
             return CHANGED
 
         # 无模板：长期偏离则重设基线（启动时对方已上钩/倒地），否则视为“变化中”
@@ -186,8 +201,9 @@ class Detector:
 
         fired = False
         if self.has_templates:
-            # 有差异模板：只有确认“上钩”后恢复才触发（倒地恢复不会误触发）
-            if prev == HOOKED and raw == ALIVE:
+            # 有差异模板：“倒地豁免”模型——被识别为“倒地”后恢复(拉起/自起)不触发；
+            # 其余偏离（上钩、或模板没认出的未知偏离）恢复都当作下钩，避免漏报。
+            if prev != DOWNED and raw == ALIVE:
                 fired = True
         else:
             # 无模板：simple_mode 兜底（任何 偏离→恢复 都当作下钩）
@@ -213,7 +229,7 @@ class Detector:
                 x1, y1 = int(box[2] * W), int(box[3] * H)
                 col = colors.get(sl.committed, (255, 255, 255))
                 cv2.rectangle(vis, (x0, y0), (x1, y1), col, 2)
-                cv2.putText(vis, str(sl.committed), (x0, max(0, y0 - 6)),
+                cv2.putText(vis, sl.debug_tag, (x0, max(0, y0 - 6)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, col, 1, cv2.LINE_AA)
             self._dbg_seq += 1
             name = os.path.join(DEBUG_DIR, f"dbg_{int(time.time())}_{self._dbg_seq:03d}.png")

@@ -73,6 +73,7 @@ def run_normal(app, cfg):
     auto_on = bool(cfg["detect"].get("auto", True))
     _hinted_no_boxes = not boxes
     _hinted_no_window = False
+    _reported_found = False
 
     def _on_unhook(idx, ts, ov_ref):
         ok = ov_ref.slot_start()
@@ -131,7 +132,7 @@ def run_normal(app, cfg):
     auto_timer.setInterval(interval)
 
     def _auto_tick():
-        nonlocal _hinted_no_boxes, _hinted_no_window
+        nonlocal _hinted_no_boxes, _hinted_no_window, _reported_found
         if not auto_on:
             return
         if not boxes:
@@ -140,11 +141,17 @@ def run_normal(app, cfg):
                 print(f"[{_now()}] 尚未校准头像框，自动识别关闭。请先运行: "
                       f"python app.py --calibrate （或按 {manual_label} 手动计时）")
             return
-        if not locator.found:
+        # 关键：每次都主动调用 locator.rect() 触发窗口搜索(带1s缓存)，
+        # 而不是先看 locator.found（found 只有在搜索后才会变真，会成死循环）
+        win_rect = locator.rect()
+        if win_rect is None:
             if not _hinted_no_window:
                 _hinted_no_window = True
                 print(f"[{_now()}] 未找到 DBD 窗口，自动识别等待中……（仅手动 {manual_label} 可用）")
             return
+        if not _reported_found:
+            _reported_found = True
+            print(f"[{_now()}] 已找到 DBD 窗口，画面自动识别开始")
         _hinted_no_window = False
         frame, rect = source.grab()
         if frame is None or rect is None:

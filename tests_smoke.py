@@ -58,6 +58,33 @@ def test_timers():
     check("10.01s 保护期结束", s["protection"] is False)
 
 
+def test_window_title_match():
+    print("== 窗口标题匹配(忽略空格/大小写) ==")
+    from dbdtimer.gamewindow import pattern_matches
+    check("Dead by Daylight 命中 DeadByDaylight",
+          pattern_matches("Dead by Daylight", "DeadByDaylight") is True)
+    check("DEAD BY DAYLIGHT 也命中",
+          pattern_matches("DEAD BY DAYLIGHT", "deadbydaylight") is True)
+    check("无关标题不命中",
+          pattern_matches("Settings", "DeadByDaylight") is False)
+
+
+def test_locator_rect_searches():
+    """locator.rect() 每次都会执行搜索(find_hwnd)，不会因“先看 found”而死等。"""
+    print("== 定位器搜索触发 ==")
+    import dbdtimer.gamewindow as gw
+    real_find, real_hrect = gw.find_hwnd, gw.hwnd_rect
+    gw.find_hwnd = lambda title: "FAKE_HWND"
+    gw.hwnd_rect = lambda h: (10, 20, 800, 600) if h == "FAKE_HWND" else None
+    try:
+        loc = gw.WindowLocator("DeadByDaylight", cache_seconds=10)
+        r = loc.rect()
+        check("rect() 触发搜索并返回矩形", r == (10, 20, 800, 600))
+        check("搜索后 found=True", loc.found is True)
+    finally:
+        gw.find_hwnd, gw.hwnd_rect = real_find, real_hrect
+
+
 def test_config():
     print("== 配置结构 ==")
     cfg = load_cfg()
@@ -183,36 +210,71 @@ def test_overlay_offscreen():
 
 def test_detector_synthetic():
     print("== 检测器状态机(合成帧) ==")
+    import shutil
+    import tempfile
+
+    import dbdtimer.detector as D
     from dbdtimer.detector import Detector
 
-    cfg = {"detect": {
-        "confirm_frames": 1, "alive_threshold": 0.6,
-        "state_threshold": 0.5, "simple_mode": True, "debug_frames": False,
-    }}
-    events = []
-    det = Detector(cfg, on_unhook=lambda idx, ts: events.append((idx, ts)))
-    boxes = [[0.2, 0.2, 0.8, 0.8]]   # 只处理槽0
+    # 隔离到临时模板目录：避免“本机已拍真实模板”影响分支选择（无模板=simple / 有模板=倒地豁免）
+    tmp = tempfile.mkdtemp(prefix="dbd_tpl_")
+    orig_tpl = D.TEMPLATES_DIR
+    D.TEMPLATES_DIR = tmp
+    try:
+        os.makedirs(os.path.join(tmp, "hooked_diff"))
+        os.makedirs(os.path.join(tmp, "downed_diff"))
 
-    W, H = 160, 120
-    grad = np.tile(np.linspace(0, 255, W, dtype=np.float32), (H, 1)).astype(np.uint8)
-    alive = cv2_merge(grad)
-    changed = cv2_merge(255 - grad)   # 反相 => 与 alive 参考强负相关
+        def make_det(events):
+            cfg = {"detect": {
+                "confirm_frames": 1, "alive_threshold": 0.6,
+                "state_threshold": 0.5, "simple_mode": True,
+                "debug_frames": False,
+            }}
+            return Detector(cfg, on_unhook=lambda i, ts: events.append((i, ts)))
 
-    t = time.monotonic()
-    for _ in range(2):
-        det.process(alive, boxes, t)
-    check("初始化为 ALIVE(无事件)", len(events) == 0)
-    det.process(changed, boxes, t + 1)
-    check("偏离后仍未触发(还需恢复)", len(events) == 0)
-    det.process(alive, boxes, t + 2)
-    check("恢复=>触发下钩事件1个", len(events) == 1, f"events={events}")
+        boxes = [[0.2, 0.2, 0.8, 0.8]]   # 只处理槽0
+        W, H = 160, 120
+        grad = np.tile(np.linspace(0, 255, W, dtype=np.float32), (H, 1)).astype(np.uint8)
+        alive = cv2_merge(grad)
+        changed = cv2_merge(255 - grad)   # 反相 => 与 alive 参考强负相关
 
-    # 三挂牺牲：偏离后没有恢复(保持死亡/偏离画面)，不应再触发
-    det.process(changed, boxes, t + 3)
-    for i in range(3):
-        det.process(changed, boxes, t + 4 + i)
-    det.process(changed, boxes, t + 8)   # 死亡画面持续偏离，无恢复
-    check("牺牲/持续偏离不触发", len(events) == 1, f"events={events}")
+        # ---- A. 无模板 => simple 模式：任何 偏离→恢复 都算下钩 ----
+        events = []
+        det = make_det(events)
+        t = time.monotonic()
+        for _ in range(2):
+            det.process(alive, boxes, t)
+        check("A 初始化为 ALIVE(无事件)", len(events) == 0)
+        det.process(changed, boxes, t + 1)
+        check("A 偏离后仍未触发(还需恢复)", len(events) == 0)
+        det.process(alive, boxes, t + 2)
+        check("A 恢复=>触发下钩1个", len(events) == 1, f"events={events}")
+        for i in range(4):
+            det.process(changed, boxes, t + 3 + i)
+        check("A 持续偏离不重复触发", len(events) == 1, f"events={events}")
+
+        # ---- B. 有差异模板：状态机语义（直接驱动 _advance 做单元验证）----
+        import cv2
+        stub = np.full((32, 32), 128, np.uint8)
+        cv2.imwrite(os.path.join(tmp, "hooked_diff", "stub.png"), stub)
+        cv2.imwrite(os.path.join(tmp, "downed_diff", "stub.png"), stub)
+
+        events = []
+        det = make_det(events)          # 现在 has_templates=True
+        sl = det.slots[0]
+        t = time.monotonic()
+        det._advance(sl, "hooked", t)
+        fired = det._advance(sl, "alive", t + 1)
+        check("B 上钩→恢复 触发", fired is True)
+        det._advance(sl, "downed", t + 2)
+        fired = det._advance(sl, "alive", t + 3)
+        check("B 倒地→恢复 不触发(拉起/自起)", fired is not True)
+        det._advance(sl, "changed", t + 4)
+        fired = det._advance(sl, "alive", t + 5)
+        check("B 未知偏离→恢复 触发(防漏报)", fired is True)
+    finally:
+        D.TEMPLATES_DIR = orig_tpl
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_overlay_render_pixels():
@@ -269,6 +331,8 @@ def cv2_merge(gray):
 
 def main():
     test_timers()
+    test_window_title_match()
+    test_locator_rect_searches()
     test_config()
     test_hotkey_map()
     test_watcher_single_string_combo()

@@ -15,8 +15,6 @@ DEBUG_DIR = os.path.join(BASE_DIR, "debug")
 
 # 模板子目录名（校准时可拍 正常/上钩/倒地 三态参考图）
 TPL_ALIVE = "alive"          # 每槽的正常头像原图(按槽位命名 slot{0..3}.png)
-TPL_HOOKED = "hooked"        # (保留) 整框原图参考，非主用
-TPL_DOWNED = "downed"        # (保留) 整框原图参考，非主用
 # 方案①：差异模板 —— “该框状态图 - 该槽正常图”，可去掉角色脸/背景，只留图标
 TPL_HOOKED_DIFF = "hooked_diff"
 TPL_DOWNED_DIFF = "downed_diff"

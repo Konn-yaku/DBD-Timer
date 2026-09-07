@@ -49,13 +49,21 @@ def _title(hwnd):
     return buf.value
 
 
+def pattern_matches(title: str, pattern: str) -> bool:
+    """标题匹配：忽略大小写与所有空白(空格等)，做子串判断。
+
+    例：pattern="DeadByDaylight" 能匹配标题 "Dead by Daylight" / "DEAD BY DAYLIGHT"。
+    """
+    flat = lambda s: "".join(s.lower().split())
+    return flat(pattern) in flat(title)
+
+
 def find_hwnd(title_part):
-    """按标题子串(不区分大小写)找可见窗口。返回 hwnd 或 None。"""
-    title_part = title_part.lower()
+    """按标题子串(忽略大小写/空格)找可见窗口。返回 hwnd 或 None。"""
     for hwnd in _enumerate_hwnds():
         if not user32.IsWindowVisible(hwnd):
             continue
-        if title_part in _title(hwnd).lower():
+        if pattern_matches(_title(hwnd), title_part):
             return hwnd
     return None
 
