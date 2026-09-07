@@ -106,11 +106,19 @@ def run_normal(app, cfg):
     def _on_rebind():
         from dbdtimer.config import save as save_cfg
         from dbdtimer.keycapture import KeyCaptureDialog
-        dlg = KeyCaptureDialog(current=_key_label(keys["manual_start"]), parent=ov)
-        if dlg.exec() == 1 and dlg.key_name:          # QDialog.Accepted
-            keys["manual_start"] = dlg.key_name
-            save_cfg(cfg)
-            _configure_watcher()                      # 立即用新键生效
+        # 捕获期间暂停按键监听：避免“用来改键的那次按键”同时触发计时
+        watcher.stop()
+        accepted = False
+        try:
+            dlg = KeyCaptureDialog(current=_key_label(keys["manual_start"]), parent=ov)
+            if dlg.exec() == 1 and dlg.key_name:          # QDialog.Accepted
+                keys["manual_start"] = dlg.key_name
+                save_cfg(cfg)
+                _configure_watcher()                      # 用新键重建监听
+                accepted = True
+        finally:
+            watcher.start()                               # 重新武装后再恢复监听
+        if accepted:
             print(f"[{_now()}] 手动计时键已改为: {_key_label(dlg.key_name)}")
 
     ov.rebind_requested.connect(_on_rebind)

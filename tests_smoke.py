@@ -95,6 +95,36 @@ def test_watcher_single_string_combo():
     check("组合键仍正常(2个修饰)", w._items[2][1] == [0x11, 0x12])
 
 
+def test_watcher_arming():
+    """启动/恢复时若主键已被按住，不应误触发；松开后再按才触发且不重复。"""
+    print("== KeyWatcher 武装门 ==")
+    import dbdtimer.hotkey as hk
+    real = hk._is_down
+    down = set()
+    hk._is_down = lambda vk: vk in down
+    try:
+        w = hk.KeyWatcher()
+        fired = []
+        w.add("F1", lambda: fired.append(1))
+        down.add(0x70)
+        w._poll()                     # 启动瞬间 F1 被按住 => 不应触发
+        check("启动即按住不误触发", len(fired) == 0)
+        down.clear()
+        w._poll()                     # 松开 => 武装完成
+        down.add(0x70)
+        w._poll()                     # 按下 => 触发一次
+        check("武装后按下触发1次", len(fired) == 1)
+        w._poll()                     # 持续按住 => 不重复
+        check("按住不重复触发", len(fired) == 1)
+        down.clear()
+        w._poll()
+        down.add(0x70)
+        w._poll()                     # 松开再按 => 可再次触发
+        check("松开再按可再次触发", len(fired) == 2)
+    finally:
+        hk._is_down = real
+
+
 def test_overlay_offscreen():
     print("== 悬浮窗(离屏) ==")
     from PySide6.QtWidgets import QApplication
@@ -242,6 +272,7 @@ def main():
     test_config()
     test_hotkey_map()
     test_watcher_single_string_combo()
+    test_watcher_arming()
     test_overlay_offscreen()
     test_overlay_render_pixels()
     test_detector_synthetic()

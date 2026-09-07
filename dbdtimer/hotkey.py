@@ -87,6 +87,7 @@ class KeyWatcher(QObject):
         super().__init__(parent)
         self._items = []      # (id, mods:list[vk], main:vk, callback)
         self._prev_down = {}  # id -> bool
+        self._armed = False   # 是否已“武装”：等所有主键松开一次后才允许触发
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll)
         self._timer.setInterval(30)
@@ -104,6 +105,7 @@ class KeyWatcher(QObject):
         self._prev_down[item_id] = False
 
     def start(self):
+        self._armed = False   # 重启后重新武装：避免把启动瞬间按着的键误当一次触发
         self._timer.start()
 
     def stop(self):
@@ -115,6 +117,18 @@ class KeyWatcher(QObject):
         self._prev_down.clear()
 
     def _poll(self):
+        # 武装门：启动(或重绑恢复)后，先等所有主键都松开一次，才允许触发
+        if not self._armed:
+            any_down = False
+            for item_id, _mods, main, _cb in self._items:
+                if _is_down(main):
+                    any_down = True
+                    self._prev_down[item_id] = True
+                else:
+                    self._prev_down[item_id] = False
+            if any_down:
+                return
+            self._armed = True
         for item_id, mods, main, cb in self._items:
             if not _is_down(main):
                 self._prev_down[item_id] = False
