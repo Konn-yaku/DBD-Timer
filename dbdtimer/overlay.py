@@ -159,8 +159,6 @@ class OverlayWindow(QWidget):
             lab.set_value("")
             self._labels.append(lab)
         self._beep_p = [False] * self._rows
-
-        self.setFixedHeight(100)  # 占位，几何由 _update_geometry 决定
         self._font_applied = self._font_px   # 当前实际应用的字号
         # 刷新循环
         self._timer = QTimer(self)
@@ -265,6 +263,9 @@ class OverlayWindow(QWidget):
 
     def _apply_anchor(self, geo):
         win_x, win_y, win_w, win_h, rects = geo
+        # 解除自由模式可能留下的固定尺寸约束，让窗口能按 4 行高度自由伸缩
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
         if (win_x, win_y, win_w, win_h) != (self.x(), self.y(), self.width(), self.height()):
             self.setGeometry(win_x, win_y, win_w, win_h)
         for lab, r in zip(self._labels, rects):
