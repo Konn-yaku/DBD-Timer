@@ -19,6 +19,9 @@ dist/
 # 发布用压缩包（release zip）
 DBD下钩计时助手.zip
 
+# 本地 Release Notes（发布时手动复制到 GitHub Release，不入库）
+RELEASE_NOTES.md
+
 # 打包脚本与说明：仅供本机手动打包使用，不入仓库
 dbdtimer.spec
 打包成exe.bat
