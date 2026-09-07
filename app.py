@@ -20,13 +20,35 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from dbdtimer import capture, gamewindow, hotkey, iconengine, overlay
-from dbdtimer.config import load as load_cfg
+from dbdtimer.config import ensure_runtime_data, load as load_cfg
 from dbdtimer.timers import TimerBank
 
 _KEY_LABEL = {
     "XBUTTON1": "鼠标侧键1(XBUTTON1)",
     "XBUTTON2": "鼠标侧键2(XBUTTON2)",
 }
+
+
+def _redirect_stdio_if_windowed():
+    """单文件无控制台版(exe)：把 stdout/stderr 指到 exe 旁的“运行日志.log”。
+
+    PyInstaller --noconsole 运行时 sys.stdout/stderr 为 None，直接 print 会崩，
+    且用户看不到任何信息；统一重定向到日志文件便于排障。
+    源码运行/控制台版保持不变。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if sys.stdout is not None and sys.stderr is not None:
+        return   # 控制台版 exe：保持原样
+    try:
+        from dbdtimer.config import BASE_DIR
+        _f = open(os.path.join(BASE_DIR, "运行日志.log"), "w", encoding="utf-8")
+        sys.stdout = _f
+        sys.stderr = _f
+    except Exception:
+        import io
+        sys.stdout = io.StringIO()
+        sys.stderr = io.StringIO()
 
 
 def _now():
@@ -186,6 +208,39 @@ def run_normal(app, cfg):
         finally:
             watcher.start()   # 重新武装后再恢复监听
 
+    def _open_calibration():
+        """托盘右键→校准头像框（发布版无控制台，也靠它校准）。
+
+        与改键同理：原生托盘菜单仍抓着焦点，须由 singleShot(0) 延迟到菜单
+        关闭后再打开。校准期间暂停自动识别与热键；保存后悬浮窗/识别立即生效。
+        未保存(放弃)则只恢复暂停前状态，不影响原框。
+        """
+        nonlocal boxes, _hinted_no_boxes
+        from dbdtimer.calibration import CalibrationDialog
+        from PySide6.QtWidgets import QDialog
+        was_running = auto_timer.isActive()
+        watcher.stop()
+        auto_timer.stop()
+        loc2 = gamewindow.WindowLocator(cfg["game"]["window_title"])
+        src2 = capture.FrameSource(loc2)
+        accepted = False
+        try:
+            dlg = CalibrationDialog(cfg, loc2, src2)
+            dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+            accepted = dlg.exec() == QDialog.DialogCode.Accepted
+        finally:
+            src2.close()
+            watcher.start()                 # 无论保存与否都恢复监听/识别
+            if was_running:
+                auto_timer.start()
+        if not accepted:
+            return                          # 放弃：不动原有框与状态
+        boxes = cfg["hud"]["boxes"]         # 仅“保存并退出”(accept)才写回 cfg
+        _hinted_no_boxes = not boxes        # 允许自动识别重新提示/恢复
+        ov.set_boxes(boxes)                 # 悬浮窗行数/锚定随之更新
+        det.reset()                         # 新框对应新画面位置，重建状态基线
+        print(f"[{_now()}] 校准结束：头像框 {len(boxes)} 个，已生效")
+
     _configure_watcher()
     watcher.start()
 
@@ -245,6 +300,8 @@ def run_normal(app, cfg):
         _tray_auto_act.setChecked(_auto_relock_s > 0)
         _tray_auto_act.triggered.connect(_set_auto_relock)
         menu.addSeparator()
+        menu.addAction("校准头像框…（首次使用/换分辨率）").triggered.connect(
+            lambda: QTimer.singleShot(0, _open_calibration))
         menu.addAction("快捷键设置…").triggered.connect(
             lambda: QTimer.singleShot(0, _open_shortcuts))
         menu.addSeparator()
@@ -332,6 +389,8 @@ def run_calibrate(app, cfg):
 
 
 def main():
+    # 单文件无控制台 exe：先把输出重定向到 exe 旁的 运行日志.log
+    _redirect_stdio_if_windowed()
     # 统一输出编码为 UTF-8（避免部分终端/管道下打印 emoji/中文时 GBK 报错）
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -346,6 +405,8 @@ def main():
     args = parser.parse_args()
 
     cfg = load_cfg()
+    # 打包后首启：确保 exe 旁 templates/debug 就位并从内置解出图标模型
+    ensure_runtime_data()
     if args.debug:
         cfg["detect"]["debug_frames"] = True
 
@@ -369,18 +430,11 @@ def main():
     except ValueError:
         pass
 
-    try:
-        if args.calibrate:
-            return run_calibrate(app, cfg)
-        if args.demo:
-            return run_demo(app, cfg)
-        return run_normal(app, cfg)
-    finally:
-        try:
-            from dbdtimer.config import ensure_dirs
-            ensure_dirs()
-        except Exception:
-            pass
+    if args.calibrate:
+        return run_calibrate(app, cfg)
+    if args.demo:
+        return run_demo(app, cfg)
+    return run_normal(app, cfg)
 
 
 if __name__ == "__main__":

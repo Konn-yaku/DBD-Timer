@@ -1,16 +1,44 @@
 # -*- coding: utf-8 -*-
 """配置加载与持久化。
 
-config.json 位于项目根目录，由校准/悬浮窗在运行时写回。
+- 开发(源码)运行时：config.json/templates/debug 位于项目根目录；
+- PyInstaller 打包后(sys.frozen)：位于 exe 同目录，随 exe 走、可写。
 未校准前一切用默认值，程序仍可运行（仅手动热键可用）。
 """
 import copy
 import json
 import os
+import sys
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+def _app_base_dir():
+    """用户数据根目录：源码=项目根；exe=exe 所在目录。
+
+    注意 PyInstaller 单文件运行时会先把程序解压到临时目录(_MEIPASS)，
+    不能把可写数据(config.json/templates/debug)放那儿——每次启动都会重建。
+    放 exe 同目录既能持久化，也便于用户整包迁移。
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def resource_path(rel):
+    """只读内置资源路径（打包时打进 exe 的数据）。
+
+    源码运行 = 项目目录；打包后 = PyInstaller 解压目录(_MEIPASS)/rel，
+    用于把单文件 exe 里内置的 icon_model.npz 首次运行时解出到 exe 旁。
+    """
+    if getattr(sys, "frozen", False):
+        base = getattr(sys, "_MEIPASS",
+                       os.path.dirname(os.path.abspath(sys.executable)))
+        return os.path.join(base, rel)
+    return os.path.join(_app_base_dir(), rel)
+
+
+BASE_DIR = _app_base_dir()
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
-# 图标训练/模型目录（icon_model.npz 与训练样本 templates/icons/ 都在其下）
+# 图标模型目录（打包后位于 exe 同目录，由程序内置副本自动解出）
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 DEBUG_DIR = os.path.join(BASE_DIR, "debug")
 
@@ -111,3 +139,27 @@ def save(data):
 def ensure_dirs():
     os.makedirs(TEMPLATES_DIR, exist_ok=True)
     os.makedirs(DEBUG_DIR, exist_ok=True)
+
+
+def ensure_runtime_data():
+    """让运行所需目录与图标模型就位（每次启动都调用，幂等）。
+
+    1. 确保 templates/ 存在（打包后位于 exe 同目录）。debug/ 刻意**不**预先
+       创建：只有显式开启调试(--debug / config detect.debug_frames=true)真正
+       写帧时，图标引擎才会惰性创建该目录——正常与发布使用不会产生任何截图目录。
+    2. 若 exe 旁还没有 templates/icon_model.npz，则从 exe 内置副本
+       (_MEIPASS/templates/icon_model.npz) 复制一份——这样单文件 exe
+       无需额外携带模型文件，删除模板目录后也能自动恢复。
+    """
+    os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    model_dst = os.path.join(TEMPLATES_DIR, "icon_model.npz")
+    if os.path.exists(model_dst):
+        return
+    try:
+        src = resource_path(os.path.join("templates", "icon_model.npz"))
+        if os.path.exists(src) and os.path.abspath(src) != os.path.abspath(model_dst):
+            import shutil
+            shutil.copyfile(src, model_dst)
+            print(f"[config] 已从程序内置解出图标模型 -> {model_dst}")
+    except Exception as exc:
+        print(f"[config] 解出图标模型失败：{exc}")

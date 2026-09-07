@@ -307,6 +307,28 @@ class OverlayWindow(QWidget):
         self._apply_free_layout()
         self._layout_lock_btn(self.width())
 
+    # ---------- 运行中更换头像框（校准后即用） ----------
+    def set_boxes(self, boxes):
+        """热更新头像框(校准保存后调用)：行数随框数增减，随后重新锚定。
+
+        - 行数=框数；框数为 0 时回落到自由排布(4 行=计时槽)。
+        - 只增删标签 widget 数量，不改计时槽(bank)本身。
+        """
+        self._boxes = list(boxes) if boxes else []
+        self._rows = len(self._boxes) if self._boxes else len(self._bank.slots)
+        while len(self._labels) < self._rows:
+            lab = DigitLabel(self._font_px, self)
+            lab.set_value("")
+            self._labels.append(lab)
+            lab.show()
+        for i, lab in enumerate(self._labels):
+            lab.setVisible(i < self._rows)
+        self._beep_p = [False] * self._rows
+        self._font_applied = 0        # 下次几何计算强制按新行宽重设字号
+        self._free_laid_out = False   # 允许重新自由排版
+        self._update_geometry()
+        self._layout_lock_btn(self.width())
+
     # ---------- 位置 / 拖动 ----------
     def _save_pos(self):
         if self._boxes and self._rect_provider and self._last_anchor is not None:

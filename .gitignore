@@ -10,3 +10,8 @@ debug/
 config.json
 templates/
 samples/
+
+# PyInstaller 打包产物（中间 build/ 与最终 dist/ 不提交）
+build/
+dist/
+*.log
