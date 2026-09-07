@@ -41,7 +41,7 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe app.py --debug
 ```
 
-也可以在资源管理器里**双击** `启动计时助手.bat` / `校准.bat`。
+也可以在资源管理器里**双击** `启动计时助手.bat` 直接运行；需要重新框选头像时，在项目目录执行 `.\.venv\Scripts\python.exe app.py --calibrate`。
 
 ## 快捷键与悬浮窗（托盘图标控制）
 

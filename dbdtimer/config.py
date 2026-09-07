@@ -10,14 +10,9 @@ import os
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+# 图标训练/模型目录（icon_model.npz 与训练样本 templates/icons/ 都在其下）
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 DEBUG_DIR = os.path.join(BASE_DIR, "debug")
-
-# 模板子目录名（校准时可拍 正常/上钩/倒地 三态参考图）
-TPL_ALIVE = "alive"          # 每槽的正常头像原图(按槽位命名 slot{0..3}.png)
-# 方案①：差异模板 —— “该框状态图 - 该槽正常图”，可去掉角色脸/背景，只留图标
-TPL_HOOKED_DIFF = "hooked_diff"
-TPL_DOWNED_DIFF = "downed_diff"
 
 DEFAULTS = {
     "game": {
@@ -111,12 +106,6 @@ def save(data):
     except Exception as exc:
         print(f"[config] 保存失败：{exc}")
         return False
-
-
-def tpl_dir(category):
-    d = os.path.join(TEMPLATES_DIR, category)
-    os.makedirs(d, exist_ok=True)
-    return d
 
 
 def ensure_dirs():

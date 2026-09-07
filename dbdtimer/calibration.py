@@ -1,34 +1,20 @@
 # -*- coding: utf-8 -*-
-"""校准界面：在 DBD 画面上框出 4 个幸存者头像框，并可拍摄三态参考模板。
+"""校准界面：在 DBD 画面上框出 4 个幸存者状态图标（头像框）。
 
 用途：
-1. 框选头像：鼠标拖出矩形（最多 4 个，多画会顶掉最早的）。框存成归一化坐标。
-2. 拍模板：先点击选中某个框（变红），再点“记为上钩/记倒地/记正常”。
-   建议在自定对局(机器人)里操作：把人类挂上钩时拍“上钩”，砍倒时拍“倒地”。
-3. “保存并退出”把框写入 config.json。
+1. 鼠标拖出矩形框住 4 个幸存者状态图标（最多 4 个，多画会顶掉最早）。
+2. “保存并退出”把框以归一化坐标写入 config.json(hud.boxes)，供图标识别引擎裁剪。
 
-画面可暂停，方便精确对框/拍摄。
+画面可暂停，方便精确对框。
 """
-import glob
-import os
-import time
-
 import cv2
-import numpy as np
-from PySide6.QtCore import Qt, QTimer, QPoint, QRect
+from PySide6.QtCore import Qt, QTimer, QRect
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QWidget,
 )
 
-from .config import (
-    load as _load_cfg, save as _save_cfg, tpl_dir,
-    TPL_ALIVE, TPL_HOOKED_DIFF, TPL_DOWNED_DIFF,
-)
-
-
-def _count(category):
-    return len(glob.glob(os.path.join(tpl_dir(category), "*.png")))
+from .config import save as _save_cfg
 
 
 class _Preview(QWidget):
@@ -177,10 +163,10 @@ class CalibrationDialog(QDialog):
         root = QVBoxLayout(self)
 
         tip = QLabel(
-            "① 在底部把 4 个幸存者头像各拖一个框：绿色=已框，左上角有 1~4 序号。\n"
-            "② 先给每个框各拍一张【记为正常】（记录该槽正常外观）——点中某框(变红)→记为正常。\n"
-            "③ 出现状态时再点【记为上钩/记为倒地】：程序会存成“差异图”(去掉脸和背景、只留图标)。\n"
-            "④ 拍完点“保存并退出”。（建议在自定对局/机器人局操作；画面可“暂停/继续”）"
+            "① 在左侧幸存者状态列上把 4 个图标各拖一个框：绿色=已框，左上角有 1~4 序号。\n"
+            "② 点中某个框可选中（变红）查看其归一化坐标。\n"
+            "③ 框好后点“保存并退出”。\n"
+            "（建议在自定对局/机器人局操作；画面可“暂停/继续”）"
         )
         tip.setWordWrap(True)
         root.addWidget(tip)
@@ -205,28 +191,15 @@ class CalibrationDialog(QDialog):
         root.addLayout(row1)
 
         row2 = QHBoxLayout()
-        self._btn_alive = QPushButton(f"记为正常（{_count(TPL_ALIVE)}）")
-        self._btn_hooked = QPushButton(f"记为上钩（{_count(TPL_HOOKED_DIFF)}）")
-        self._btn_downed = QPushButton(f"记为倒地（{_count(TPL_DOWNED_DIFF)}）")
-        self._btn_alive.clicked.connect(self._capture_alive)
-        self._btn_hooked.clicked.connect(lambda: self._capture(TPL_HOOKED_DIFF))
-        self._btn_downed.clicked.connect(lambda: self._capture(TPL_DOWNED_DIFF))
-        row2.addWidget(self._btn_alive)
-        row2.addWidget(self._btn_hooked)
-        row2.addWidget(self._btn_downed)
-        row2.addStretch(1)
-        root.addLayout(row2)
-
-        row3 = QHBoxLayout()
         save_btn = QPushButton("保存并退出")
         save_btn.setDefault(True)
         save_btn.clicked.connect(self.accept)
         cancel_btn = QPushButton("放弃退出")
         cancel_btn.clicked.connect(self.reject)
-        row3.addStretch(1)
-        row3.addWidget(save_btn)
-        row3.addWidget(cancel_btn)
-        root.addLayout(row3)
+        row2.addStretch(1)
+        row2.addWidget(save_btn)
+        row2.addWidget(cancel_btn)
+        root.addLayout(row2)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -266,73 +239,6 @@ class CalibrationDialog(QDialog):
         self._pixmap = QPixmap.fromImage(qimg.copy())
         self._preview.update()
         self._refresh_hint()
-
-    def _selected_crop(self):
-        """返回选中框在当前帧的 BGR 裁剪图；不满足条件时给提示并返回 None。"""
-        if self._frame is None:
-            self._hint.setText("当前没有画面：请确认已启动 DBD（窗口标题含 DeadByDaylight）。")
-            return None
-        if not (0 <= self.selected < len(self.boxes)):
-            self._hint.setText("还没有选中头像框：请先用鼠标点中画面里的某个头像框（会变红），再点按钮。")
-            return None
-        b = self.boxes[self.selected]
-        fw, fh = self._frame_size
-        x0 = max(0, int(b[0] * fw)); y0 = max(0, int(b[1] * fh))
-        x1 = min(fw, int(b[2] * fw)); y1 = min(fh, int(b[3] * fh))
-        if x1 - x0 < 4 or y1 - y0 < 4:
-            self._hint.setText("选中框太小，请重新框大一点。")
-            return None
-        return self._frame[y0:y1, x0:x1].copy()
-
-    def _refresh_counts(self):
-        self._btn_alive.setText(f"记为正常（{_count(TPL_ALIVE)}）")
-        self._btn_hooked.setText(f"记为上钩（{_count(TPL_HOOKED_DIFF)}）")
-        self._btn_downed.setText(f"记为倒地（{_count(TPL_DOWNED_DIFF)}）")
-
-    def _capture_alive(self):
-        """为选中槽位记录“正常”外观，作为后续差异图计算的减数(基线)。"""
-        crop = self._selected_crop()
-        if crop is None:
-            return
-        slot = self.selected
-        name = f"slot{slot}.png"
-        ok = cv2.imwrite(os.path.join(tpl_dir(TPL_ALIVE), name), crop)
-        if ok:
-            self._refresh_counts()
-            self._hint.setText(f"✓ 已把第 {slot + 1} 个框记为【正常】→ templates/alive/{name}")
-        else:
-            self._hint.setText("保存失败：请检查 templates/ 目录是否可写。")
-
-    def _capture(self, category):
-        """拍 上钩/倒地：保存“该状态图 - 该槽正常图”的差异图（只留图标，去掉脸/背景）。"""
-        crop = self._selected_crop()
-        if crop is None:
-            return
-        slot = self.selected
-        normal_path = os.path.join(tpl_dir(TPL_ALIVE), f"slot{slot}.png")
-        if not os.path.exists(normal_path):
-            self._hint.setText(
-                f"第 {slot + 1} 个框还没有“记为正常”。请先（在该框为正常状态时）点【记为正常】，再拍 上钩/倒地。")
-            return
-        normal = cv2.imread(normal_path, cv2.IMREAD_GRAYSCALE)
-        if normal is None:
-            self._hint.setText("读取“正常”参考失败，请重新为该框点一次【记为正常】。")
-            return
-        cur = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        cur = cv2.resize(cur, (32, 32), interpolation=cv2.INTER_AREA)
-        norm = cv2.resize(normal, (32, 32), interpolation=cv2.INTER_AREA)
-        diff = np.abs(cur.astype(np.float32) - norm.astype(np.float32))
-        diff_u8 = np.clip(diff, 0, 255).astype(np.uint8)
-        label = "上钩" if category == TPL_HOOKED_DIFF else "倒地"
-        # 注意：文件名只用 ASCII（opencv 在 Windows 上读不了中文名）
-        name = f"{int(time.time() * 1000)}_{category}.png"
-        ok = cv2.imwrite(os.path.join(tpl_dir(category), name), diff_u8)
-        if ok:
-            self._refresh_counts()
-            self._hint.setText(
-                f"✓ 已保存第 {slot + 1} 框的「{label}」差异图 → templates/{category}/{name}（可多拍几张）")
-        else:
-            self._hint.setText("保存失败：请检查 templates/ 目录是否可写。")
 
     # ---- 收尾 ----
     def accept(self):
