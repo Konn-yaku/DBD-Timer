@@ -48,7 +48,10 @@ class IconEngine:
         self.debug_on = bool(d.get("debug_frames", False))
         self._next_debug = 0.0
         self._dbg_seq = 0
+        self._dbg_reported = False   # 首次成功写帧后打印实际目录
         self._t0 = time.monotonic()   # 日志用相对运行时间，便于阅读
+        if self.debug_on:
+            print(f"[icon] 调试帧已开启 → 将写入目录: {DEBUG_DIR}")
 
     @property
     def ready(self):
@@ -96,7 +99,11 @@ class IconEngine:
             self._dbg_seq += 1
             name = os.path.join(DEBUG_DIR,
                                 f"dbg_icon_{int(now)}_{self._dbg_seq:03d}.png")
-            cv2.imwrite(name, vis)
+            ok = cv2.imwrite(name, vis)
+            if not self._dbg_reported:
+                self._dbg_reported = True
+                print(f"[icon] 调试帧写盘: {'成功' if ok else '失败(cv2.imwrite返回False)'} "
+                      f"-> {name}（目录 {DEBUG_DIR}）")
             files = sorted(glob.glob(os.path.join(DEBUG_DIR, "dbg_icon_*.png")))
             for fp in files[:-80]:
                 try:

@@ -21,6 +21,15 @@ user32.IsWindowVisible.argtypes = [wintypes.HWND]
 user32.GetForegroundWindow.restype = wintypes.HWND
 user32.IsIconic.argtypes = [wintypes.HWND]
 user32.IsIconic.restype = wintypes.BOOL
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+user32.IsWindow.argtypes = [wintypes.HWND]
+user32.IsWindow.restype = wintypes.BOOL
+
+# SW_RESTORE / SW_MINIMIZE
+_SW_RESTORE = 9
 
 # DWMWA_EXTENDED_FRAME_BOUNDS
 _DWMWA_EXTENDED_FRAME_BOUNDS = 9
@@ -137,5 +146,21 @@ class WindowLocator:
             if user32.IsIconic(self._hwnd):
                 return False
             return bool(user32.GetForegroundWindow() == self._hwnd)
+        except Exception:
+            return False
+
+    def focus(self):
+        """把 DBD 窗口带回前台（若未最小化则还原 + SetForegroundWindow）。
+
+        用于校准/快捷键对话框等模态窗口关闭后，主动把前台交还游戏，
+        避免程序误以为 DBD 在后台而暂停识别（需用户手动切屏才恢复）。
+        返回是否成功置为前台。
+        """
+        if self._hwnd is None:
+            return False
+        try:
+            if user32.IsIconic(self._hwnd):
+                user32.ShowWindow(self._hwnd, _SW_RESTORE)
+            return bool(user32.SetForegroundWindow(self._hwnd))
         except Exception:
             return False

@@ -227,7 +227,7 @@ def run_normal(app, cfg):
         关闭后再打开。校准期间暂停自动识别与热键；保存后悬浮窗/识别立即生效。
         未保存(放弃)则只恢复暂停前状态，不影响原框。
         """
-        nonlocal boxes, _hinted_no_boxes
+        nonlocal boxes, _hinted_no_boxes, _was_fg
         from dbdtimer.calibration import CalibrationDialog
         from PySide6.QtWidgets import QDialog
         was_running = auto_timer.isActive()
@@ -251,6 +251,13 @@ def run_normal(app, cfg):
         _hinted_no_boxes = not boxes        # 允许自动识别重新提示/恢复
         ov.set_boxes(boxes)                 # 悬浮窗行数/锚定随之更新
         det.reset()                         # 新框对应新画面位置，重建状态基线
+        # 校准对话框是模态的，关闭后 Windows 前台未必回到 DBD——主动带回前台，
+        # 否则前台守卫会一直以为 DBD 在后台而暂停识别（需用户手动切屏才恢复）。
+        _was_fg = None                      # 重置，让识别循环重新评估前台
+        if locator.focus():
+            print(f"[{_now()}] 已切回 DBD 窗口前台，自动识别即刻恢复")
+        else:
+            print(f"[{_now()}] 提示：请点击一下游戏窗口以恢复自动识别")
         print(f"[{_now()}] 校准结束：头像框 {len(boxes)} 个，已生效"
               f"（模型{'已加载' if det.ready else '缺失·仅手动'}，"
               f"自动识别{'开启' if det.ready else '不可用'}）")
