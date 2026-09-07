@@ -233,90 +233,6 @@ def test_overlay_offscreen():
             pass
 
 
-def test_detector_synthetic():
-    print("== 检测器状态机(合成帧) ==")
-    import shutil
-    import tempfile
-
-    import dbdtimer.detector as D
-    from dbdtimer.detector import Detector
-
-    # 隔离到临时模板目录：避免“本机已拍真实模板”影响分支选择（无模板=simple / 有模板=倒地豁免）
-    tmp = tempfile.mkdtemp(prefix="dbd_tpl_")
-    orig_tpl = D.TEMPLATES_DIR
-    D.TEMPLATES_DIR = tmp
-    try:
-        os.makedirs(os.path.join(tmp, "hooked_diff"))
-        os.makedirs(os.path.join(tmp, "downed_diff"))
-
-        def make_det(events):
-            cfg = {"detect": {
-                "confirm_frames": 1, "alive_threshold": 0.6,
-                "state_threshold": 0.5, "simple_mode": True,
-                "debug_frames": False,
-            }}
-            return Detector(cfg, on_unhook=lambda i, ts: events.append((i, ts)))
-
-        boxes = [[0.2, 0.2, 0.8, 0.8]]   # 只处理槽0
-        W, H = 160, 120
-        grad = np.tile(np.linspace(0, 255, W, dtype=np.float32), (H, 1)).astype(np.uint8)
-        alive = cv2_merge(grad)
-        changed = cv2_merge(255 - grad)   # 反相 => 与 alive 参考强负相关
-
-        # ---- A. 无模板 => simple：长偏离→恢复触发；短抖动不触发 ----
-        events = []
-        det = make_det(events)
-        t = time.monotonic()
-        for _ in range(2):
-            det.process(alive, boxes, t)
-        check("A 初始化为 ALIVE(无事件)", len(events) == 0)
-        det.process(changed, boxes, t + 1)   # 短偏离(<min_event_s=2.5s)
-        check("A 短偏离不进入事件态", det.slots[0].committed == "alive")
-        check("A 短偏离不触发", len(events) == 0, f"events={events}")
-        det.process(changed, boxes, t + 4)   # 偏离累计>=2.5s → 进入事件态
-        check("A 长偏离进入事件态", det.slots[0].committed == "changed")
-        det.process(alive, boxes, t + 5)     # 恢复 → 触发下钩
-        check("A 长偏离后恢复=>触发1个", len(events) == 1, f"events={events}")
-        for i in range(4):
-            det.process(changed, boxes, t + 6 + i)
-        check("A 持续偏离不重复触发", len(events) == 1, f"events={events}")
-
-        # ---- B. 有差异模板：状态机语义（直接驱动 _advance 做单元验证）----
-        import cv2
-        stub = np.full((32, 32), 128, np.uint8)
-        cv2.imwrite(os.path.join(tmp, "hooked_diff", "stub.png"), stub)
-        cv2.imwrite(os.path.join(tmp, "downed_diff", "stub.png"), stub)
-
-        events = []
-        det = make_det(events)          # 现在 has_templates=True
-        sl = det.slots[0]
-        t = time.monotonic()
-        det._advance(sl, "hooked", t)              # prev=None → 进入事件态
-        fired = det._advance(sl, "alive", t + 1)   # 上钩→恢复 → 触发
-        check("B 上钩→恢复 触发", fired is True)
-        det._advance(sl, "downed", t + 2)          # 短倒地(<2.5s)不进入
-        det._advance(sl, "downed", t + 4)          # last_alive=t+1, 3s>=2.5 → 进入倒地
-        check("B 进入倒地态", sl.committed == "downed")
-        fired = det._advance(sl, "alive", t + 4.1)  # 倒地恢复(拉起/自起) → 不触发
-        check("B 倒地→恢复 不触发(拉起/自起)", fired is not True)
-        det._advance(sl, "changed", t + 4.2)       # 短偏离不进入
-        det._advance(sl, "changed", t + 7.0)       # last_alive=t+4.1, 2.9s>=2.5 → 进入
-        fired = det._advance(sl, "alive", t + 7.1)  # 未知偏离恢复 → 触发(防漏报)
-        check("B 未知偏离→恢复 触发(防漏报)", fired is True)
-
-        # ---- C. 秒级抖动：短偏离(<min_event_s)后恢复，绝不触发 ----
-        det.reset()
-        sl = det.slots[0]
-        sl.committed = "alive"; sl.raw = "alive"; sl.last_alive = t + 20
-        fired = det._advance(sl, "changed", t + 20.2)
-        check("C 短偏离不进入事件态", fired is False and sl.committed == "alive")
-        fired = det._advance(sl, "alive", t + 20.4)
-        check("C 抖动恢复不触发", fired is False)
-    finally:
-        D.TEMPLATES_DIR = orig_tpl
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_icon_hook_state():
     """图标状态机：only 钩上→离开(非献祭) 触发；献祭/死亡屏蔽；防抖。"""
     print("== 图标状态机(下钩检测) ==")
@@ -422,11 +338,6 @@ def test_overlay_render_pixels():
     app.processEvents()
 
 
-def cv2_merge(gray):
-    import cv2
-    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-
-
 def main():
     test_timers()
     test_window_title_match()
@@ -437,7 +348,6 @@ def main():
     test_watcher_arming()
     test_overlay_offscreen()
     test_overlay_render_pixels()
-    test_detector_synthetic()
     test_icon_hook_state()
     print(f"\n全部通过: {len(PASS)} 项")
 

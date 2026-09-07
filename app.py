@@ -4,7 +4,7 @@
 用法：
   python app.py              正常使用（自动识别 + 鼠标侧键手动兜底）
   python app.py --demo       无游戏演示悬浮窗效果（每几秒自动触发一次）
-  python app.py --calibrate  校准：框选 4 个头像 + 拍三态模板
+  python app.py --calibrate  校准：框选 4 个幸存者头像框
   python app.py --debug      打开调试：识别画面存到 debug/ 目录
 
 运行前提：在虚拟环境里运行，例如  .venv\\Scripts\\python.exe app.py
@@ -19,7 +19,7 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from dbdtimer import capture, detector as detector_mod, gamewindow, hotkey, iconengine, overlay
+from dbdtimer import capture, gamewindow, hotkey, iconengine, overlay
 from dbdtimer.config import load as load_cfg
 from dbdtimer.timers import TimerBank
 
@@ -107,18 +107,9 @@ def run_normal(app, cfg):
     keys = cfg["keys"]
     source = capture.FrameSource(locator)
 
-    # 引擎选择：icon=图标识别(需已训练模型) / face=旧整框比对 / auto=有图标模型用icon否则face
-    def _make_detector():
-        eng = str(cfg["detect"].get("engine", "auto")).lower()
-        icon = iconengine.IconEngine(cfg, on_unhook=lambda i, ts: _on_unhook(i, ts, ov))
-        if eng == "icon" or (eng == "auto" and icon.ready):
-            icon.is_icon = True
-            return icon
-        d = detector_mod.Detector(cfg, on_unhook=lambda i, ts: _on_unhook(i, ts, ov))
-        d.is_icon = False
-        return d
-
-    det = _make_detector()
+    # 识别引擎：图标识别（唯一方案；旧整框人脸比对已移除）。
+    # 无训练模型时 det.ready=False，自动识别不触发(仅手动可用)。
+    det = iconengine.IconEngine(cfg, on_unhook=lambda i, ts: _on_unhook(i, ts, ov))
 
     boxes = cfg["hud"]["boxes"]
     auto_on = bool(cfg["detect"].get("auto", True))
@@ -321,12 +312,11 @@ def run_normal(app, cfg):
     print(f"        当前：锁定 {_key_label(keys['toggle_lock'])} · 退出 {_key_label(keys['quit'])}")
     print(f"        解锁后悬浮窗顶部会出现锁图标，点击即重新锁定(穿透)")
     if boxes:
-        if getattr(det, "is_icon", False):
+        if det.ready:
             print(f"        已加载 {len(boxes)} 个头像框，自动识别开启（图标识别模式，已加载训练模型）")
         else:
-            print(f"        已加载 {len(boxes)} 个头像框，自动识别开启"
-                  + (f"（hooked模板{len(det.pool_hooked)}张/downed模板{len(det.pool_downed)}张）"
-                     if det.has_templates else "（未拍模板：simple 模式，倒地拉起可能误报）"))
+            print(f"        已加载 {len(boxes)} 个头像框，但未找到图标模型 templates/icon_model.npz，"
+                  f"自动识别暂不可用（请先运行 train_icon_clf.py 训练，或仅用手动计时）")
     else:
         print(f"        未校准头像框：自动识别关闭，仅手动 {_key_label(keys['manual_start'])} 可用")
     return app.exec()
