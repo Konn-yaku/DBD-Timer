@@ -251,7 +251,9 @@ def run_normal(app, cfg):
         _hinted_no_boxes = not boxes        # 允许自动识别重新提示/恢复
         ov.set_boxes(boxes)                 # 悬浮窗行数/锚定随之更新
         det.reset()                         # 新框对应新画面位置，重建状态基线
-        print(f"[{_now()}] 校准结束：头像框 {len(boxes)} 个，已生效")
+        print(f"[{_now()}] 校准结束：头像框 {len(boxes)} 个，已生效"
+              f"（模型{'已加载' if det.ready else '缺失·仅手动'}，"
+              f"自动识别{'开启' if det.ready else '不可用'}）")
 
     def _prompt_calibrate():
         """首启未校准：弹窗引导用户去校准（发布版无控制台也需要）。"""
@@ -399,12 +401,16 @@ def run_normal(app, cfg):
     print(f"        当前：锁定 {_key_label(keys['toggle_lock'])} · 退出 {_key_label(keys['quit'])} "
           f"· 手动1 {_key_label(keys['manual_1'])}")
     print(f"        解锁后悬浮窗顶部会出现锁图标，点击即重新锁定(穿透)")
+    # 图标模型状态（与是否校准无关，始终打印以便排查）
+    _model_txt = ("已加载训练模型" if det.ready
+                  else "未找到图标模型 templates/icon_model.npz（自动识别不可用，仅手动）")
+    print(f"        图标模型: {_model_txt}")
     if boxes:
         if det.ready:
-            print(f"        已加载 {len(boxes)} 个头像框，自动识别开启（图标识别模式，已加载训练模型）")
+            print(f"        已加载 {len(boxes)} 个头像框，自动识别开启")
         else:
-            print(f"        已加载 {len(boxes)} 个头像框，但未找到图标模型 templates/icon_model.npz，"
-                  f"自动识别暂不可用（请先运行 train_icon_clf.py 训练，或仅用手动1~4键）")
+            print(f"        已加载 {len(boxes)} 个头像框，但模型缺失，自动识别暂不可用"
+                  f"（请先运行 train_icon_clf.py 训练，或仅用手动1~4键）")
     else:
         print(f"        未校准头像框：自动识别关闭，可先用 手动1~4 键 精确计时（{_manual_keys_hint()}）")
 

@@ -103,5 +103,5 @@ class IconEngine:
                     os.remove(fp)
                 except OSError:
                     pass
-        except Exception:
-            pass
+        except Exception as exc:   # 不再静默吞掉，便于定位写帧失败
+            print(f"[icon] 调试帧写入失败: {exc}（目标目录 {DEBUG_DIR}）")
