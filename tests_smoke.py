@@ -342,6 +342,13 @@ def test_icon_hook_state():
                "hooked", "hooked", "other", "other", "other", "other", "other"])
     check("图标 离开又回钩不触发，真正下钩触发", len(ev) == 1, f"ev={ev}")
 
+    # 误判 dead 自愈：死人不会上钩，DEAD 中若持续出现 hooked → 解除屏蔽，随后下钩可触发
+    det, ev = mk()
+    feed(det, (["other", "other", "hooked", "hooked", "sacrificed", "sacrificed"]
+               + ["hooked", "hooked"]        # DEAD 中再持续 hooked → 自愈解除
+               + ["other"] * 4))             # 随后真实下钩 → 触发
+    check("图标 误判dead后可自愈并触发", len(ev) == 1, f"ev={ev}")
+
 
 def test_overlay_render_pixels():
     """离屏抓图验证：数字是否真的画出来了(黄/白像素计数)。"""

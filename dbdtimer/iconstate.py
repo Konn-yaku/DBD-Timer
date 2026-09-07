@@ -38,8 +38,8 @@ class _Slot:
 class IconHookDetector:
     """输入：每槽当前类别；输出：下钩事件 [(idx, now)]。"""
 
-    def __init__(self, on_unhook, n=4, confirm=2,
-                 post_window_s=1.2, dead_idle_s=120.0):
+    def __init__(self, on_unhook, n=4, confirm=4,
+                 post_window_s=1.2, dead_idle_s=60.0):
         self.on_unhook = on_unhook
         self.confirm = max(1, int(confirm))
         self.post_window_s = float(post_window_s)   # 离开钩上后等多久确认是否献祭
@@ -72,7 +72,14 @@ class IconHookDetector:
                 continue
 
             if st.state == DEAD:
-                # 献祭/死亡后人物已死：屏蔽一切触发；长时间无活动视为新局释放
+                # 死人绝不会再上钩：若仍持续出现 hooked，说明此前的 DEAD 是误判
+                # (如受伤/倒地的红调头像被误认成献祭)，解除屏蔽重新正常判定，
+                # 避免“误判死亡 → 整段时间内真实下钩全部漏报”。
+                if c == "hooked":
+                    st.state = HOOKED
+                    st.pend_at = 0.0
+                    continue
+                # 长时间无活动视为新局/界面切换，释放
                 if now - st.dead_at > self.dead_idle_s:
                     st.state = IDLE
                 continue

@@ -46,13 +46,35 @@ class DummyIconClassifier(IconClassifier):
 class PrototypeIconClassifier(IconClassifier):
     """最近原型分类器：每类存一个均值特征(灰度patch)，按归一化相关最近类判定。
 
+    关键增强 mask：训练时自动定位“上钩/献祭固定图标区”(对比 hooked/normal 均值差异)，
+    预测时**只在该区域内算相关**，把随角色/地图变化的脸与背景排除 → 换任何角色都稳。
+
     由于 'other' 是开放集，用“最相似类的相关度 < threshold => other”实现。
     """
 
-    def __init__(self, protos, threshold=0.70):
+    def __init__(self, protos, threshold=0.70, mask=None):
         # protos: {label: 1d float 均值}，label ∈ {'hooked','sacrificed'} (other 不建原型)
         self.protos = protos
         self.threshold = float(threshold)
+        self.mask = (np.asarray(mask, dtype=bool).ravel()
+                     if mask is not None else None)
+
+    # 只有“钩上/献祭”是可判定的正类；其余(正常/受伤/倒地/任何角色)一律 other。
+    # 关键：不为 normal 建“脸原型”——角色头像成百上千、训练集只见过几个，
+    # 一旦把 normal 当正类参与竞争，没见过的新角色容易被误判成正类。
+    _POSITIVE = ("hooked", "sacrificed")
+
+    def _sim(self, x, p):
+        """归一化相关；若给定了判别区 mask，只在 mask 内像素计算。"""
+        if self.mask is not None:
+            m = self.mask
+            if m.sum() < 4:
+                return 0.0
+            x = x[m]
+            p = p[m]
+        if x.std() < 1e-6 or p.std() < 1e-6:
+            return 0.0
+        return float(np.corrcoef(x, p)[0, 1])
 
     def predict(self, patch_bgr):
         x = _prep(patch_bgr).ravel()
@@ -61,28 +83,30 @@ class PrototypeIconClassifier(IconClassifier):
         best = None
         best_corr = self.threshold
         for label, p in self.protos.items():
+            if label not in self._POSITIVE:   # normal 等开放集样本不参与竞争
+                continue
             if p.std() < 1e-6:
                 continue
-            v = float(np.corrcoef(x, p)[0, 1])
+            v = self._sim(x, p)
             if v > best_corr:
                 best_corr = v
                 best = label
-        if best is None:
-            return "other"
-        if best == "normal":
-            return "other"    # normal 原型只是“开放集/正常”的代表
-        return best
+        return best if best is not None else "other"
 
 
 def load_model(path=MODEL_FILE):
-    """从 npz 加载原型模型；不存在或损坏返回 None。"""
+    """从 npz 加载模型(hooked/sacrificed 原型 + 可选判别区 mask)；损坏返回 None。"""
     try:
         if not os.path.exists(path):
             return None
         data = np.load(path)
-        protos = {str(k): data[k].astype(np.float32) for k in data.files}
-        thr = float(data.get("threshold", 0.70)) if "threshold" in data.files else 0.70
-        return PrototypeIconClassifier(protos, threshold=thr)
+        thr = float(data["threshold"]) if "threshold" in data.files else 0.70
+        mask = data["mask"].astype(bool) if "mask" in data.files else None
+        protos = {}
+        for k in ("hooked", "sacrificed"):
+            if k in data.files:
+                protos[k] = data[k].astype(np.float32)
+        return PrototypeIconClassifier(protos, threshold=thr, mask=mask)
     except Exception:
         return None
 
