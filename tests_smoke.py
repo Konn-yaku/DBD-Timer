@@ -65,15 +65,34 @@ def test_config():
           isinstance(cfg, dict) and all(k in cfg for k in ("game", "hud", "keys", "overlay", "detect")))
     check("hud.boxes 为列表", isinstance(cfg["hud"]["boxes"], list))
     check("overlay 含计时颜色", "color_protection" in cfg["overlay"] and "color_ds" in cfg["overlay"])
-    check("手动键可被识别", cfg["keys"]["manual_start"] in ("XBUTTON1", "XBUTTON2", "F8"))
+    from dbdtimer.hotkey import to_vk
+    check("手动键可被识别", to_vk(cfg["keys"]["manual_start"]) is not None)
 
 
 def test_hotkey_map():
     print("== 热键虚拟键码 ==")
-    from dbdtimer.hotkey import to_vk
+    from dbdtimer.hotkey import to_vk, canonical_name, key_candidates
     check("XBUTTON1 -> 0x05", to_vk("XBUTTON1") == 0x05)
     check("XBUTTON2 -> 0x06", to_vk("XBUTTON2") == 0x06)
     check("F8 -> 0x77", to_vk("F8") == 0x77)
+    check("canonical 0x06=XBUTTON2", canonical_name(0x06) == "XBUTTON2")
+    check("canonical 0x41=A", canonical_name(0x41) == "A")
+    check("候选键非空", len(key_candidates()) > 30)
+
+
+def test_watcher_single_string_combo():
+    """回归：单个按键字符串(F1/XBUTTON2)不能被当作字符列表拆开。"""
+    print("== KeyWatcher 单键注册 ==")
+    from dbdtimer.hotkey import KeyWatcher
+    w = KeyWatcher()
+    w.add("F1", lambda: None)
+    w.add("XBUTTON2", lambda: None)
+    _item0, _item1 = w._items
+    check("F1 无修饰键", _item0[1] == [])
+    check("F1 主键 vk=0x70", _item0[2] == 0x70)
+    check("XBUTTON2 主键 vk=0x06", _item1[2] == 0x06)
+    w.add(["Ctrl", "Alt", "L"], lambda: None)
+    check("组合键仍正常(2个修饰)", w._items[2][1] == [0x11, 0x12])
 
 
 def test_overlay_offscreen():
@@ -222,6 +241,7 @@ def main():
     test_timers()
     test_config()
     test_hotkey_map()
+    test_watcher_single_string_combo()
     test_overlay_offscreen()
     test_overlay_render_pixels()
     test_detector_synthetic()

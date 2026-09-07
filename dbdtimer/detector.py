@@ -34,6 +34,9 @@ def _load_pool(category):
     files = glob.glob(os.path.join(TEMPLATES_DIR, category, "*.png"))
     out = []
     for fp in files:
+        # opencv 在 Windows 读不了中文名，跳过非 ASCII 文件(避免噪音/误读)
+        if not os.path.basename(fp).isascii():
+            continue
         img = cv2.imread(fp, cv2.IMREAD_GRAYSCALE)
         if img is None:
             continue

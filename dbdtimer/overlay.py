@@ -10,7 +10,7 @@
 import time
 import winsound
 
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import Qt, QTimer, QPoint, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QGuiApplication
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QToolButton,
@@ -69,6 +69,9 @@ class DigitLabel(QWidget):
 
 
 class OverlayWindow(QWidget):
+    # 用户点了“键”按钮，请求应用打开按键重绑对话框
+    rebind_requested = Signal()
+
     def __init__(self, cfg, bank: TimerBank, parent=None):
         super().__init__(parent)
         self._cfg = cfg
@@ -101,6 +104,18 @@ class OverlayWindow(QWidget):
         root.setSpacing(2)
 
         ctrl_row = QHBoxLayout()
+
+        self._key_btn = QToolButton(self)
+        self._key_btn.setFixedSize(22, 22)
+        self._key_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._key_btn.setStyleSheet(
+            "QToolButton{border:none;background:transparent;font-size:12px;color:white;}"
+        )
+        self._key_btn.setText("键")
+        self._key_btn.setToolTip("设置手动计时按键：点击后按一下你想要的键")
+        self._key_btn.clicked.connect(self.rebind_requested.emit)
+        ctrl_row.addWidget(self._key_btn)
+
         self._lock_btn = QToolButton(self)
         self._lock_btn.setFixedSize(22, 22)
         self._lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -124,7 +139,7 @@ class OverlayWindow(QWidget):
         self._labels[1].set_value("")
 
         # 固定窗口尺寸，避免槽位增减导致窗口抖动
-        self.setFixedSize(int(font_px * 2.4) + 22, 28 + 2 * (font_px + 14) + 14)
+        self.setFixedSize(int(font_px * 2.4) + 48, 28 + 2 * (font_px + 14) + 14)
 
         # 刷新循环
         self._timer = QTimer(self)

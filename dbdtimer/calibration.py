@@ -324,7 +324,8 @@ class CalibrationDialog(QDialog):
         diff = np.abs(cur.astype(np.float32) - norm.astype(np.float32))
         diff_u8 = np.clip(diff, 0, 255).astype(np.uint8)
         label = "上钩" if category == TPL_HOOKED_DIFF else "倒地"
-        name = f"{int(time.time() * 1000)}_{label}.png"
+        # 注意：文件名只用 ASCII（opencv 在 Windows 上读不了中文名）
+        name = f"{int(time.time() * 1000)}_{category}.png"
         ok = cv2.imwrite(os.path.join(tpl_dir(category), name), diff_u8)
         if ok:
             self._refresh_counts()

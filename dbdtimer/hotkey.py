@@ -43,6 +43,43 @@ def to_vk(name: str):
     return None
 
 
+# ---- 单键候选与规范化命名（用于应用内“按下新按键即重绑”） ----
+_CANON = {}
+
+
+def _fill_canon():
+    for i in range(26):
+        _CANON[0x41 + i] = chr(ord("A") + i)
+    for i in range(10):
+        _CANON[0x30 + i] = str(i)
+    for i in range(1, 13):
+        _CANON[0x6F + i] = f"F{i}"
+    _CANON[0x05] = "XBUTTON1"
+    _CANON[0x06] = "XBUTTON2"
+    _CANON[0x25] = "Left"
+    _CANON[0x26] = "Up"
+    _CANON[0x27] = "Right"
+    _CANON[0x28] = "Down"
+    _CANON[0x20] = "Space"
+
+
+_fill_canon()
+
+
+def key_down(vk: int) -> bool:
+    return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+
+
+def key_candidates():
+    """返回 [(vk, 规范化名称), ...]，供“按键捕获”轮询。"""
+    return list(_CANON.items())
+
+
+def canonical_name(vk: int):
+    """虚拟键码 -> 规范化名称（如 0x41 -> 'A'，0x05 -> 'XBUTTON1'）。"""
+    return _CANON.get(vk)
+
+
 class KeyWatcher(QObject):
     """轮询一组组合键，主键上升沿触发回调。需在 Qt 事件循环内使用。"""
 
@@ -55,7 +92,9 @@ class KeyWatcher(QObject):
         self._timer.setInterval(30)
 
     def add(self, combo, callback):
-        """combo: ["Ctrl","Alt","L"] 或 ["F8"]。组合内最后一个作为主键。"""
+        """combo: ["Ctrl","Alt","L"] 组合列表，或单个按键字符串如 "F8"/"XBUTTON2"。"""
+        if isinstance(combo, str):
+            combo = [combo]
         vks = [to_vk(k) for k in combo]
         if any(v is None for v in vks):
             raise ValueError(f"无法识别的按键组合: {combo}")
@@ -69,6 +108,11 @@ class KeyWatcher(QObject):
 
     def stop(self):
         self._timer.stop()
+
+    def clear(self):
+        """清空所有已注册按键，便于应用内重绑后重建。"""
+        self._items.clear()
+        self._prev_down.clear()
 
     def _poll(self):
         for item_id, mods, main, cb in self._items:

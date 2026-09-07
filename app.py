@@ -80,7 +80,8 @@ def run_normal(app, cfg):
 
     def _on_manual():
         ok = ov.slot_start()
-        print(f"[{_now()}] 手动触发 {manual_label} → 分配={'成功' if ok else '两槽都在计时(忽略)'}")
+        cur = _key_label(keys["manual_start"])
+        print(f"[{_now()}] 手动触发 {cur} → 分配={'成功' if ok else '两槽都在计时(忽略)'}")
 
     def _on_lock():
         ov.toggle_lock()
@@ -91,12 +92,29 @@ def run_normal(app, cfg):
         app.quit()
 
     watcher = hotkey.KeyWatcher()
-    try:
-        watcher.add(keys["manual_start"], _on_manual)
-        watcher.add(keys["toggle_lock"], _on_lock)
-    except ValueError as exc:
-        print(f"[hotkey] {exc}")
-    watcher.add(["Ctrl", "Alt", "Q"], _on_quit)  # 退出
+
+    def _configure_watcher():
+        """(重新)注册全部按键——重绑手动键后也靠它重建。"""
+        watcher.clear()
+        try:
+            watcher.add(keys["manual_start"], _on_manual)
+            watcher.add(keys["toggle_lock"], _on_lock)
+        except ValueError as exc:
+            print(f"[hotkey] {exc}")
+        watcher.add(["Ctrl", "Alt", "Q"], _on_quit)   # 退出
+
+    def _on_rebind():
+        from dbdtimer.config import save as save_cfg
+        from dbdtimer.keycapture import KeyCaptureDialog
+        dlg = KeyCaptureDialog(current=_key_label(keys["manual_start"]), parent=ov)
+        if dlg.exec() == 1 and dlg.key_name:          # QDialog.Accepted
+            keys["manual_start"] = dlg.key_name
+            save_cfg(cfg)
+            _configure_watcher()                      # 立即用新键生效
+            print(f"[{_now()}] 手动计时键已改为: {_key_label(dlg.key_name)}")
+
+    ov.rebind_requested.connect(_on_rebind)
+    _configure_watcher()
     watcher.start()
 
     # 自动识别主循环
@@ -130,7 +148,7 @@ def run_normal(app, cfg):
     auto_timer.start()
 
     print(f"[{_now()}] DBD 下钩计时助手已启动")
-    print(f"        手动计时: 按 {manual_label}")
+    print(f"        手动计时: 按 {manual_label}（可点悬浮窗左上『键』按钮随时改）")
     print(f"        锁定/解锁悬浮窗: 点悬浮窗🔒按钮 或 {'+'.join(keys['toggle_lock'])}")
     print(f"        退出: Ctrl+Alt+Q")
     if boxes:
@@ -152,6 +170,13 @@ def run_calibrate(app, cfg):
 
 
 def main():
+    # 统一输出编码为 UTF-8（避免部分终端/管道下打印 emoji/中文时 GBK 报错）
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     parser = argparse.ArgumentParser(description="DBD 下钩计时助手")
     parser.add_argument("--demo", action="store_true", help="无游戏演示悬浮窗")
     parser.add_argument("--calibrate", action="store_true", help="校准头像框/模板")
