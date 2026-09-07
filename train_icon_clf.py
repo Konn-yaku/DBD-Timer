@@ -57,12 +57,15 @@ def main():
         print("\n样本太少(<6)，请先用 capture_frames + label_icons 采集。")
         return
 
-    # ---- 判别区 mask：hooked 与 normal 均值差异大的像素(固定图标区) ----
-    mh = np.mean([iconclf._prep(x) for x in data["hooked"]], axis=0)
+    # ---- 每类独立的判别区 mask：该状态类均值 与 normal 均值差异大的像素。
+    #      上钩(钩形)与献祭(骷髅)图标区不同，必须各自一个 mask。 ----
     mn = np.mean([iconclf._prep(x) for x in data["normal"]], axis=0)
-    diff = np.abs(mh - mn)
-    mask = (diff > float(np.percentile(diff, MASK_PCT))).ravel()
-    print(f"\n判别区 mask 像素占比={mask.mean() * 100:.0f}%（图标固定区）")
+    masks = {}
+    for c in POSITIVE:
+        mc = np.mean([iconclf._prep(x) for x in data[c]], axis=0)
+        diff = np.abs(mc - mn)
+        masks[c] = (diff > float(np.percentile(diff, MASK_PCT))).ravel()
+        print(f"判别区 mask[{c}] 像素占比={masks[c].mean() * 100:.0f}%")
 
     # ---- 划分训练/留出 ----
     tri, tei = {}, {}
@@ -80,7 +83,7 @@ def main():
     best = (None, -1, None)
     for thr100 in range(55, 91, 5):
         thr = thr100 / 100.0
-        clf = iconclf.PrototypeIconClassifier(protos, threshold=thr, mask=mask)
+        clf = iconclf.PrototypeIconClassifier(protos, threshold=thr, mask=masks)
         pos_acc = {}
         for c in POSITIVE:
             ok = sum(1 for i in tei[c] if clf.predict(data[c][i]) == c)
@@ -97,16 +100,17 @@ def main():
         return
     thr, _, (pos_acc, nfp) = best
 
-    print("\n== 留出评估(阈值=%.2f, 带判别区mask) ==" % thr)
+    print("\n== 留出评估(阈值=%.2f, 每类独立判别区mask) ==" % thr)
     for c in POSITIVE:
         print(f"  {c:>10} 查准率={pos_acc[c] * 100:.0f}%")
     print(f"  {'normal':>10} 误判成正类比例={nfp * 100:.1f}%")
 
     save = {c: protos[c] for c in POSITIVE}
     save["threshold"] = np.array([thr])
-    save["mask"] = mask
+    for c, m in masks.items():
+        save["mask_" + c] = m
     np.savez(iconclf.MODEL_FILE, **save)
-    print(f"\n已保存模型 -> {iconclf.MODEL_FILE}  (threshold={thr:.2f}, 含判别区 mask)")
+    print(f"\n已保存模型 -> {iconclf.MODEL_FILE}  (threshold={thr:.2f}, 每类各带判别区 mask)")
 
 
 if __name__ == "__main__":
