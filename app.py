@@ -2,7 +2,7 @@
 """DBD 下钩计时助手 - 入口。
 
 用法：
-  python app.py              正常使用（自动识别 + 手动1~4键 精确兜底）
+  python app.py              正常使用（进入 DBD 后：自动识别 + 手动1~4键 精确兜底）
   python app.py --demo       无游戏演示悬浮窗效果（每几秒自动触发一次）
   python app.py --calibrate  校准：框选 4 个幸存者头像框
   python app.py --debug      打开调试：识别画面存到 debug/ 目录
@@ -116,7 +116,7 @@ def run_demo(app, cfg):
 
 
 def run_normal(app, cfg):
-    """正常模式：悬浮窗 + 手动1~4键精确计时 + 画面自动识别(需先校准)。"""
+    """正常模式：悬浮窗 + 手动1~4键精确计时 + 画面自动识别(进入 DBD 后)。"""
     bank = TimerBank()
     locator0 = gamewindow.WindowLocator(cfg["game"]["window_title"])
     boxes0 = cfg["hud"]["boxes"]
@@ -136,7 +136,7 @@ def run_normal(app, cfg):
         return "  ".join(f"{i + 1}号={_key_label(keys[f'manual_{i + 1}'])}" for i in range(4))
 
     # 识别引擎：图标识别（唯一方案；旧整框人脸比对已移除）。
-    # 无训练模型时 det.ready=False，自动识别不触发(仅手动可用)。
+    # 无训练模型时 det.ready=False，自动识别不触发（手动1~4键仍可用，需先进 DBD）。
     det = iconengine.IconEngine(cfg, on_unhook=lambda i, ts: _on_unhook(i, ts, ov))
 
     boxes = cfg["hud"]["boxes"]
@@ -154,8 +154,15 @@ def run_normal(app, cfg):
               f"{'' if ok else '(该槽已在计时，已重新归零)'}")
 
     def _make_manual(idx):
-        """手动快捷键 idx(0..3)：精确只启/重启第 idx+1 号计时器(该幸存者)。"""
+        """手动快捷键 idx(0..3)：精确只启/重启第 idx+1 号计时器(该幸存者)。
+
+        与自动识别一致：仅当检测到 DBD 窗口(进入游戏)后才允许手动计时；
+        未进游戏时按键无效并提示，避免在无意义的桌面场景误启动计时。
+        """
         def _on_manual():
+            if locator.rect() is None:   # 主动触发一次窗口搜索
+                print(f"[{_now()}] 手动计时需先进入 DBD（未检测到游戏窗口，已忽略）")
+                return
             ov.start_slot(idx)   # 有效槽总是成功(从0重新开始)
             cur = _key_label(keys[f"manual_{idx + 1}"])
             print(f"[{_now()}] 手动触发 {idx + 1}号 → 计时器{idx + 1} 从 0 开始（{cur}）")
@@ -271,8 +278,9 @@ def run_normal(app, cfg):
         mb.setIcon(QMessageBox.Icon.Information)
         mb.setText("尚未校准头像框，自动识别暂不可用。")
         mb.setInformativeText(
-            "进入 DBD 后，用「校准头像框…」在左侧 4 个逃生者状态图标上各框一个框。\n"
-            "在那之前，可用 手动1~4 键 精确控制对应 1~4 号计时器。"
+            "请先启动并进入 DBD（悬浮窗/手动计时也需检测到游戏窗口才会启用）。\n"
+            "进入 DBD 后，用「校准头像框…」在左侧 4 个逃生者状态图标上各框一个框，"
+            "即可开启自动识别。"
         )
         cal_btn = mb.addButton("去校准…", QMessageBox.ButtonRole.AcceptRole)
         mb.addButton("稍后再说", QMessageBox.ButtonRole.RejectRole)
@@ -379,20 +387,20 @@ def run_normal(app, cfg):
         nonlocal _hinted_no_boxes, _hinted_no_window, _reported_found, _was_fg
         if not auto_on:
             return
-        if not boxes:
-            if not _hinted_no_boxes:
-                _hinted_no_boxes = True
-                print(f"[{_now()}] 尚未校准头像框，自动识别关闭。"
-                      f"可先用 手动1~4 键 精确计时（{_manual_keys_hint()}）")
-            return
         # 关键：每次都主动调用 locator.rect() 触发窗口搜索(带1s缓存)，
         # 而不是先看 locator.found（found 只有在搜索后才会变真，会成死循环）
         win_rect = locator.rect()
         if win_rect is None:
             if not _hinted_no_window:
                 _hinted_no_window = True
-                print(f"[{_now()}] 未找到 DBD 窗口，自动识别等待中……"
-                      f"（可先用 手动1~4 键 精确计时：{_manual_keys_hint()}）")
+                print(f"[{_now()}] 未找到 DBD 窗口，自动识别与手动计时均待命。"
+                      f"请先启动并进入 DBD（悬浮窗也会随之出现）")
+            return
+        if not boxes:
+            if not _hinted_no_boxes:
+                _hinted_no_boxes = True
+                print(f"[{_now()}] 已找到 DBD，但尚未校准头像框：自动识别关闭，"
+                      f"可用 手动1~4 键 精确计时（{_manual_keys_hint()}）")
             return
         # 前台守卫：窗口被遮挡/最小化时，抓屏抓到的是遮挡物而非游戏画面，
         # 会疯狂误触发，故暂停识别；切回游戏窗口后自动恢复并重建基线。
@@ -421,7 +429,8 @@ def run_normal(app, cfg):
 
     print(f"[{_now()}] DBD 下钩计时助手已启动")
     print(f"        自动识别: 4 个计时器与 4 名逃生者一一对应（槽0~3→计时器1~4）")
-    print(f"        手动计时: 精确控制 1~4 号（{_manual_keys_hint()}）")
+    print(f"        手动计时: 精确控制 1~4 号（{_manual_keys_hint()}）——与自动识别相同，"
+          f"需先进入 DBD 后才可用")
     print(f"        悬浮窗平时为鼠标穿透；锁定/退出等快捷键可在托盘图标右键→快捷键设置 中自由配置")
     print(f"        当前：锁定 {_key_label(keys['toggle_lock'])} · 退出 {_key_label(keys['quit'])} "
           f"· 手动1 {_key_label(keys['manual_1'])}")
@@ -435,9 +444,10 @@ def run_normal(app, cfg):
             print(f"        已加载 {len(boxes)} 个头像框，自动识别开启")
         else:
             print(f"        已加载 {len(boxes)} 个头像框，但模型缺失，自动识别暂不可用"
-                  f"（请先运行 train_icon_clf.py 训练，或仅用手动1~4键）")
+                  f"（请先运行 train_icon_clf.py 训练，或进入 DBD 后仅用手动1~4键）")
     else:
-        print(f"        未校准头像框：自动识别关闭，可先用 手动1~4 键 精确计时（{_manual_keys_hint()}）")
+        print(f"        未校准头像框：进入 DBD 后自动识别关闭，可用 手动1~4 键 精确计时"
+              f"（{_manual_keys_hint()}）")
 
     # 首启未校准自动引导（发布版无控制台也适用）：弹出提示并提供“去校准”。
     if not boxes:
