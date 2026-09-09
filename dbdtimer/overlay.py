@@ -368,6 +368,23 @@ class OverlayWindow(QWidget):
     def is_dragging(self):
         return self._dragging
 
+    def _sync_visibility(self):
+        """按“是否存在游戏窗口”自动显隐（仅锚定到游戏的正常模式）。
+
+        - rect_provider 为 None(demo/演示)：始终显示，不做干预；
+        - rect_provider 存在(正常模式)：找到 DBD 窗口才显示并贴齐，否则完全隐藏
+          (避免在桌面上显示无意义的矮窗口；托盘常驻提供反馈)。
+        """
+        if self._rect_provider is None:
+            if not self.isVisible():
+                self.show()
+            return
+        present = self._game_rect() is not None
+        if present and not self.isVisible():
+            self.show()
+        elif not present and self.isVisible():
+            self.hide()
+
     def _refresh_lock_ui(self):
         """未锁定(可拖动/非穿透)时显示锁图标；已锁定(穿透)时隐藏(点了也没用)。"""
         self._lock_btn.setText("\U0001F512" if self._locked else "\U0001F513")
@@ -390,9 +407,9 @@ class OverlayWindow(QWidget):
 
     def _apply_lock(self):
         # 设计：锁定 = 整窗鼠标穿透(完全不挡游戏)；解锁 = 可点击/拖动微调。
-        # setWindowFlag 会自动隐藏窗口，需再 show() 使其可见。
+        # setWindowFlag 会自动隐藏窗口，之后按“有无游戏窗口”决定是否显示。
         self.setWindowFlag(Qt.WindowType.WindowTransparentForInput, self._locked)
-        self.show()
+        self._sync_visibility()
 
     # ---------- 计时入口 / 刷新 ----------
     def start_slot(self, idx):
@@ -408,7 +425,9 @@ class OverlayWindow(QWidget):
         return f"{min(elapsed, self._bank.duration):.1f}"
 
     def _tick(self):
-        # 先维持几何(锚定/拖动状态下的贴齐)
+        # 先按“有无游戏窗口”同步显隐(正常模式；demo 不受影响)
+        self._sync_visibility()
+        # 再维持几何(锚定/拖动状态下的贴齐)
         self._update_geometry()
         results = self._bank.sample()
         active = {r["idx"]: r for r in results}

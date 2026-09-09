@@ -123,7 +123,8 @@ def run_normal(app, cfg):
     # 4 行计时器由悬浮窗自行锚定到 4 个头像框左侧(行距=头像间距)
     ov = overlay.OverlayWindow(cfg, bank, boxes=boxes0,
                                rect_provider=lambda: locator0.rect())
-    ov.show()
+    # 注意：不再无条件 show()——悬浮窗按“是否找到 DBD 窗口”自动显隐(_sync_visibility)：
+    # 无 DBD 窗口时完全隐藏(托盘常驻反馈)，进入游戏后自动显示并贴齐头像列。
 
     # 正常模式主循环里复用同一个定位器/源
     locator = locator0
@@ -351,6 +352,23 @@ def run_normal(app, cfg):
     else:
         print(f"[{_now()}] 提示: 系统托盘不可用；请用热键锁定/解锁/退出")
     ov.lock_changed.connect(_on_lock_state)
+
+    # 仅“首次启动且启动时没有 DBD 窗口”时，弹一次托盘气泡说明悬浮窗为何不显示。
+    # 悬浮窗此时按 _sync_visibility 隐藏(不显示矮窗口)；托盘常驻作为“程序在跑”的反馈。
+    def _notify_startup_no_dbd():
+        if _tray is None or locator.rect() is not None:
+            return
+        try:
+            _tray.showMessage(
+                "DBD 下钩计时助手",
+                "已启动并驻留托盘：未检测到 DBD 窗口，悬浮窗暂不显示。\n"
+                "进入游戏后会自动出现并贴齐头像列。",
+                QSystemTrayIcon.MessageIcon.Information, 5000)
+        except Exception:
+            pass
+
+    if _tray is not None:
+        QTimer.singleShot(1200, _notify_startup_no_dbd)
 
     # 自动识别主循环
     interval = max(40, int(1000.0 / max(1.0, float(cfg["detect"].get("fps", 15.0)))))
